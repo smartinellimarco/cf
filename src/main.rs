@@ -108,15 +108,16 @@ fn practice(
 ) -> Result<()> {
     let config = Config::load()?;
     let mut state = client.state();
-    let path = list::resolve(client, &state, source, name)?;
+    let folder = std::env::current_dir()?;
+    let path = list::resolve(client, state.last.get(&folder), source, name)?;
     let ids = list::load(&path)?;
 
-    let key = std::env::current_dir()?.join(&path);
+    let key = folder.join(&path);
     if fresh {
         state.fresh.insert(key.clone(), codeforces::now());
     }
     let since = state.fresh.get(&key).copied().unwrap_or(0);
-    state.last = Some(path.clone());
+    state.last.insert(folder, path);
     client.save_state(&state)?;
 
     let problems = client.problems(Refresh::Cached)?;

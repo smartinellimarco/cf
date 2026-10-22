@@ -123,7 +123,7 @@ struct Problemset {
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct State {
-    pub last: Option<PathBuf>,
+    pub last: HashMap<PathBuf, PathBuf>,
     pub fresh: HashMap<PathBuf, i64>,
 }
 

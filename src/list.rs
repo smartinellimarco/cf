@@ -3,17 +3,17 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use crate::codeforces::{Client, ProblemId, State};
+use crate::codeforces::{Client, ProblemId};
 use crate::statement;
 
 pub fn resolve(
     client: &Client,
-    state: &State,
+    last: Option<&PathBuf>,
     source: Option<&str>,
     name: Option<&str>,
 ) -> Result<PathBuf> {
     let Some(source) = source else {
-        let Some(last) = &state.last else {
+        let Some(last) = last else {
             bail!("no list yet, run `cf <file | url | ->`");
         };
         return Ok(last.clone());
