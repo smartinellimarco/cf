@@ -63,7 +63,14 @@ impl FromStr for ProblemId {
     }
 }
 
+// Gym contests are numbered from 100000 and live under /gym/, usually with PDF statements.
+const FIRST_GYM_CONTEST: u32 = 100_000;
+
 impl ProblemId {
+    pub fn is_gym(&self) -> bool {
+        self.contest >= FIRST_GYM_CONTEST
+    }
+
     pub fn url(&self, page: Page) -> String {
         let ProblemId { contest, index } = self;
         match page {
