@@ -13,7 +13,7 @@ use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
 
 use crate::codeforces::{self, Client, Page, Problem, ProblemId, Submission};
-use crate::config::{Config, Lang};
+use crate::config::{Config, Lang, Paths, Quote};
 use crate::run::{self, Outcome, Report};
 use crate::statement::{self, Kind};
 
@@ -100,6 +100,9 @@ pub struct Watch<'a> {
     debouncer: Debouncer<RecommendedWatcher>,
     watched: Option<PathBuf>,
     clipboard: Option<arboard::Clipboard>,
+    root: PathBuf,
+    cache: PathBuf,
+    strays: Vec<String>,
 }
 
 impl<'a> Watch<'a> {
@@ -124,6 +127,8 @@ impl<'a> Watch<'a> {
         })
         .context("starting the file watcher")?;
         let lang = config.lang().clone();
+        let root = std::env::current_dir()?;
+        let cache = client.cache().to_path_buf();
         let mut watch = Watch {
             client,
             config,
@@ -143,6 +148,9 @@ impl<'a> Watch<'a> {
             debouncer,
             watched: None,
             clipboard: None,
+            root,
+            cache,
+            strays: Vec::new(),
         };
         watch.current = watch.next(0);
         Ok(watch)
@@ -194,10 +202,12 @@ impl<'a> Watch<'a> {
                 self.stale = false;
                 self.report = Report::Building;
                 self.render()?;
-                self.report = match run::check(&self.dir(), &self.lang) {
+                let before = self.entries();
+                self.report = match run::check(&self.paths(), &self.lang) {
                     Ok(report) => report,
                     Err(error) => Report::Failed(format!("{error:#}")),
                 };
+                self.strays = self.strays(&before);
                 dirty = true;
             }
 
@@ -265,6 +275,55 @@ impl<'a> Watch<'a> {
         PathBuf::from("problems").join(self.id().to_string())
     }
 
+    fn paths(&self) -> Paths {
+        let dir = self.root.join(self.dir());
+        Paths {
+            root: self.root.clone(),
+            source: dir.join(self.source()),
+            build: dir.join("build"),
+            cache: self.cache.clone(),
+            dir,
+        }
+    }
+
+    // Relative to the solutions folder, for paths shown on screen.
+    fn shown(&self) -> Paths {
+        let dir = self.dir();
+        Paths {
+            root: PathBuf::from("."),
+            source: dir.join(self.source()),
+            build: dir.join("build"),
+            cache: self.cache.clone(),
+            dir,
+        }
+    }
+
+    fn entries(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        let Ok(entries) = std::fs::read_dir(self.dir()) else {
+            return names;
+        };
+        for entry in entries.flatten() {
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+        names
+    }
+
+    // Anything new next to the source after a build was written outside build/ and isn't ignored by git.
+    fn strays(&self, before: &[String]) -> Vec<String> {
+        let mut strays = Vec::new();
+        for name in self.entries() {
+            let sample =
+                name.ends_with(".txt") && (name.starts_with("in") || name.starts_with("ans"));
+            let known = sample || name == "build" || name == self.source();
+            let new = !before.contains(&name) || self.strays.contains(&name);
+            if !known && new {
+                strays.push(name);
+            }
+        }
+        strays
+    }
+
     fn source(&self) -> String {
         format!("main.{}", self.lang.ext)
     }
@@ -317,6 +376,7 @@ impl<'a> Watch<'a> {
 
     fn open(&mut self) {
         self.note.clear();
+        self.strays.clear();
         self.verdict = Verdict::Idle;
         self.pending = None;
         match self.prepare() {
@@ -360,7 +420,14 @@ impl<'a> Watch<'a> {
     }
 
     fn copy(&mut self) {
-        let path = self.dir().join(&self.lang.submit);
+        match self.report {
+            Report::Ran(_) | Report::NoSamples => {}
+            Report::Building | Report::Failed(_) | Report::BuildFailed(_) => {
+                self.note = "the last build failed, fix it before copying".to_string();
+                return;
+            }
+        }
+        let path = PathBuf::from(self.paths().expand(&self.lang.submit, Quote::Plain));
         let Ok(source) = std::fs::read_to_string(&path) else {
             self.note = format!(
                 "nothing to copy yet, {} comes from a successful build",
@@ -469,7 +536,11 @@ impl<'a> Watch<'a> {
             cursor::MoveTo(0, 0),
             terminal::Clear(terminal::ClearType::All)
         )?;
-        for (at, line) in body.lines().take(room).enumerate() {
+        let mut wrapped = Vec::new();
+        for line in body.lines() {
+            wrapped.extend(wrap(line, width));
+        }
+        for (at, line) in wrapped.iter().take(room).enumerate() {
             queue!(stdout, cursor::MoveTo(0, at as u16))?;
             stdout.write_all(line.as_bytes())?;
         }
@@ -587,12 +658,24 @@ impl<'a> Watch<'a> {
             }
         }
 
+        if !self.strays.is_empty() {
+            let _ = writeln!(
+                body,
+                "\n{}",
+                format!(
+                    "Build wrote {} outside build/, git won't ignore it",
+                    self.strays.join(", ")
+                )
+                .yellow()
+            );
+        }
         if self.report.passed() {
             let _ = writeln!(body, "\n{}", "Samples pass ✓".green().bold());
             let _ = writeln!(
                 body,
                 "Submit `{}` as {}, the verdict shows up here",
-                self.lang.submit, self.lang.judge
+                self.shown().expand(&self.lang.submit, Quote::Plain),
+                self.lang.judge
             );
         }
         let verdict = match &self.verdict {
@@ -623,13 +706,7 @@ impl<'a> Watch<'a> {
                 let _ = write!(title, " ({rating})");
             }
         }
-        let dir = self.dir().display().to_string();
-        let file = format!("{dir}/{}", self.source());
-        let editor = self
-            .config
-            .editor
-            .replace("{file}", &file)
-            .replace("{dir}", &dir);
+        let editor = self.shown().expand(&self.config.editor, Quote::Shell);
         let next = match self.verdict {
             Verdict::Accepted => "next".underlined().to_string(),
             Verdict::Idle
@@ -740,4 +817,49 @@ fn diff(expected: &str, got: &str) -> String {
         out.push_str("…\n");
     }
     out
+}
+
+// Splits a line at the terminal width so a long one doesn't spill into the row drawn below it.
+// Escape sequences take no columns, so they are copied through without counting.
+fn wrap(line: &str, width: usize) -> Vec<String> {
+    let mut rows = vec![String::new()];
+    let mut column = 0;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        let Some(row) = rows.last_mut() else {
+            break;
+        };
+        if c == '\x1b' {
+            row.push(c);
+            for c in chars.by_ref() {
+                row.push(c);
+                if c.is_ascii_alphabetic() || c == '\\' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if column == width.max(1) {
+            rows.push(String::new());
+            column = 0;
+        }
+        let Some(row) = rows.last_mut() else {
+            break;
+        };
+        row.push(c);
+        column += 1;
+    }
+    rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wraps_at_width_without_counting_colors() {
+        assert_eq!(wrap("abcdefg", 3), ["abc", "def", "g"]);
+        let red = format!("{}", "abcd".red());
+        assert_eq!(wrap(&red, 4).len(), 1);
+    }
 }

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
-use crate::config::Lang;
+use crate::config::{Lang, Paths, Quote};
 
 const BUILD_TIMEOUT: Duration = Duration::from_secs(120);
 const RUN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -67,8 +67,13 @@ struct Finished {
     stderr: String,
 }
 
-pub fn check(dir: &Path, lang: &Lang) -> Result<Report> {
-    let Some(build) = sh(dir, &lang.build, Stdio::null(), BUILD_TIMEOUT)? else {
+pub fn check(paths: &Paths, lang: &Lang) -> Result<Report> {
+    let dir = paths.dir.as_path();
+    // Commands run inside build/ so whatever a compiler drops in its working directory stays ignored.
+    let cwd = paths.build.as_path();
+    std::fs::create_dir_all(cwd)?;
+    let build = paths.expand(&lang.build, Quote::Shell);
+    let Some(build) = sh(cwd, &build, Stdio::null(), BUILD_TIMEOUT)? else {
         return Ok(Report::BuildFailed("build timed out".to_string()));
     };
     if !build.success {
@@ -82,11 +87,12 @@ pub fn check(dir: &Path, lang: &Lang) -> Result<Report> {
     if samples.is_empty() {
         return Ok(Report::NoSamples);
     }
+    let run = paths.expand(&lang.run, Quote::Shell);
     let mut outcomes = Vec::new();
     for k in samples {
         let input = File::open(dir.join(format!("in{k}.txt")))?;
         let expected = std::fs::read_to_string(dir.join(format!("ans{k}.txt")))?;
-        let outcome = match sh(dir, &lang.run, Stdio::from(input), RUN_TIMEOUT)? {
+        let outcome = match sh(cwd, &run, Stdio::from(input), RUN_TIMEOUT)? {
             None => Outcome::Timeout,
             Some(Finished {
                 success: false,
