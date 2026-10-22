@@ -121,6 +121,6 @@ fn practice(
 
     let problems = client.problems(Refresh::Cached)?;
     let submissions = client.submissions(&config.handle)?;
-    let mut watch = Watch::new(client, config, path, ids, since, problems, submissions)?;
+    let mut watch = Watch::new(client, config, ids, since, problems, submissions)?;
     watch.run()
 }

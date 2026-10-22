@@ -87,8 +87,6 @@ pub struct Problem {
     pub index: String,
     pub name: String,
     pub rating: Option<u32>,
-    #[serde(default)]
-    pub tags: Vec<String>,
 }
 
 impl Problem {
