@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 
 use crate::config::{Lang, Paths, Quote};
+use crate::statement::Files;
 
 const BUILD_TIMEOUT: Duration = Duration::from_secs(120);
 const RUN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -67,7 +68,7 @@ struct Finished {
     stderr: String,
 }
 
-pub fn check(paths: &Paths, lang: &Lang) -> Result<Report> {
+pub fn check(paths: &Paths, lang: &Lang, files: &Files) -> Result<Report> {
     let dir = paths.dir.as_path();
     // Commands run inside build/ so whatever a compiler drops in its working directory stays ignored.
     let cwd = paths.build.as_path();
@@ -90,9 +91,19 @@ pub fn check(paths: &Paths, lang: &Lang) -> Result<Report> {
     let run = paths.expand(&lang.run, Quote::Shell);
     let mut outcomes = Vec::new();
     for k in samples {
-        let input = File::open(dir.join(format!("in{k}.txt")))?;
+        let input = dir.join(format!("in{k}.txt"));
         let expected = std::fs::read_to_string(dir.join(format!("ans{k}.txt")))?;
-        let outcome = match sh(cwd, &run, Stdio::from(input), RUN_TIMEOUT)? {
+        let stdin = match &files.input {
+            Some(name) => {
+                std::fs::copy(&input, cwd.join(name))?;
+                Stdio::null()
+            }
+            None => Stdio::from(File::open(&input)?),
+        };
+        if let Some(name) = &files.output {
+            let _ = std::fs::remove_file(cwd.join(name));
+        }
+        let outcome = match sh(cwd, &run, stdin, RUN_TIMEOUT)? {
             None => Outcome::Timeout,
             Some(Finished {
                 success: false,
@@ -106,13 +117,17 @@ pub fn check(paths: &Paths, lang: &Lang) -> Result<Report> {
                 stdout,
                 ..
             }) => {
-                if same_tokens(&stdout, &expected) {
+                let got = match &files.output {
+                    Some(name) => std::fs::read_to_string(cwd.join(name)).unwrap_or_default(),
+                    None => stdout,
+                };
+                if same_tokens(&got, &expected) {
                     Outcome::Pass { elapsed }
                 } else {
                     Outcome::Wrong {
                         elapsed,
                         expected,
-                        got: stdout,
+                        got,
                     }
                 }
             }
