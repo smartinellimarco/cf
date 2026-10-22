@@ -515,7 +515,7 @@ impl<'a> Watch<'a> {
                 id.to_string()
             );
             if at == cursor {
-                let _ = writeln!(body, "🦀{}", row.reverse().bold());
+                let _ = writeln!(body, "> {}", row.reverse().bold());
             } else {
                 let _ = writeln!(body, "  {row}");
             }
@@ -591,7 +591,7 @@ impl<'a> Watch<'a> {
             let _ = writeln!(body, "\n{}", "Samples pass ✓".green().bold());
             let _ = writeln!(
                 body,
-                "Submit `{}` as {}, the verdict shows up here 🦀",
+                "Submit `{}` as {}, the verdict shows up here",
                 self.lang.submit, self.lang.judge
             );
         }
@@ -601,7 +601,7 @@ impl<'a> Watch<'a> {
             Verdict::Offline => "Can't reach Codeforces, retrying…".to_string(),
             Verdict::Testing { passed } => format!("Testing… {passed} passed"),
             Verdict::Accepted => format!(
-                "{}\nEnter `n` to move on to the next problem 🦀",
+                "{}\nEnter `n` to move on to the next problem",
                 "Accepted ✓".green().bold()
             ),
             Verdict::Rejected { verdict, test } => {
