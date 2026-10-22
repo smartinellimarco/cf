@@ -24,7 +24,7 @@ The first run writes the config to `~/.config/cf/` and asks for your Codeforces 
 - `cf <list> --fresh` restarts the list: only accepted submissions from now on count.
 - `cf sync` refreshes the problem set and your submissions.
 
-Each problem lives in `problems/<id>/`: `main.<ext>` with the statement as a comment on top, and `in<k>.txt`/`ans<k>.txt` samples. Add your own cases with the next free `k`.
+Each problem lives in `problems/<id>/`: `main.<ext>` with the statement as a comment on top, and `in<k>.txt`/`ans<k>.txt` samples. Add your own cases with the next free `k`. Old problems that read `input.txt` and write `output.txt` get their samples through those files, and `cf` says so on screen.
 
 `cf` prints the command to open the problem, built from `editor` in the config, e.g. `hx --vsplit {source} {dir}/in1.txt` or `vim -O {source} {dir}/in1.txt`.
 

@@ -15,7 +15,7 @@ use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
 use crate::codeforces::{self, Client, Page, Problem, ProblemId, Submission};
 use crate::config::{Config, Dirs, Lang, Paths, Quote};
 use crate::run::{self, Outcome, Report};
-use crate::statement::{self, Kind};
+use crate::statement::{self, Files, Kind, Statement};
 
 const TICK: Duration = Duration::from_millis(100);
 const POLL_EVERY: Duration = Duration::from_secs(5);
@@ -104,6 +104,7 @@ pub struct Watch<'a> {
     templates: PathBuf,
     builds: PathBuf,
     strays: Vec<String>,
+    files: Files,
 }
 
 impl<'a> Watch<'a> {
@@ -153,6 +154,7 @@ impl<'a> Watch<'a> {
             builds: dirs.builds(&root),
             root,
             strays: Vec::new(),
+            files: Files::default(),
         };
         watch.current = watch.next(0);
         Ok(watch)
@@ -205,7 +207,7 @@ impl<'a> Watch<'a> {
                 self.report = Report::Building;
                 self.render()?;
                 let before = self.entries();
-                self.report = match run::check(&self.paths(), &self.lang) {
+                self.report = match run::check(&self.paths(), &self.lang, &self.files) {
                     Ok(report) => report,
                     Err(error) => Report::Failed(format!("{error:#}")),
                 };
@@ -386,25 +388,20 @@ impl<'a> Watch<'a> {
     fn prepare(&mut self) -> Result<()> {
         let dir = self.dir();
         let file = dir.join(self.source());
-        if !file.exists() {
-            let url = self.id().url(Page::Problem);
-            let statement = statement::parse(&self.client.get(&url)?)?;
-            let template_path = self.templates.join(self.source());
-            let template = std::fs::read_to_string(&template_path)
-                .with_context(|| format!("reading {}", template_path.display()))?;
-            std::fs::create_dir_all(&dir)?;
-            match statement.kind {
-                Kind::Standard => {
-                    for (k, sample) in statement.samples.iter().enumerate() {
-                        std::fs::write(dir.join(format!("in{}.txt", k + 1)), &sample.input)?;
-                        std::fs::write(dir.join(format!("ans{}.txt", k + 1)), &sample.answer)?;
-                    }
+        let cached = format!("statements/{}.json", self.id());
+        // Problems opened before cf cached their files still need one download to learn them.
+        self.files = match self.client.load(&cached).filter(|_| file.exists()) {
+            Some(files) => files,
+            None => {
+                let url = self.id().url(Page::Problem);
+                let statement = statement::parse(&self.client.get(&url)?)?;
+                if !file.exists() {
+                    self.create(&dir, &file, &statement, &url)?;
                 }
-                Kind::Interactive => {}
+                self.client.save(&cached, &statement.files)?;
+                statement.files
             }
-            let header = statement::comment(&self.lang.comment, &statement, &url);
-            std::fs::write(&file, header + &template)?;
-        }
+        };
 
         if let Some(old) = self.watched.take() {
             let _ = self.debouncer.watcher().unwatch(&old);
@@ -414,6 +411,25 @@ impl<'a> Watch<'a> {
             .watcher()
             .watch(&dir, RecursiveMode::NonRecursive)?;
         self.watched = Some(dir);
+        Ok(())
+    }
+
+    fn create(&self, dir: &Path, file: &Path, statement: &Statement, url: &str) -> Result<()> {
+        let template_path = self.templates.join(self.source());
+        let template = std::fs::read_to_string(&template_path)
+            .with_context(|| format!("reading {}", template_path.display()))?;
+        std::fs::create_dir_all(dir)?;
+        match statement.kind {
+            Kind::Standard => {
+                for (k, sample) in statement.samples.iter().enumerate() {
+                    std::fs::write(dir.join(format!("in{}.txt", k + 1)), &sample.input)?;
+                    std::fs::write(dir.join(format!("ans{}.txt", k + 1)), &sample.answer)?;
+                }
+            }
+            Kind::Interactive => {}
+        }
+        let header = statement::comment(&self.lang.comment, statement, url);
+        std::fs::write(file, header + &template)?;
         Ok(())
     }
 
@@ -665,6 +681,16 @@ impl<'a> Watch<'a> {
                     self.strays.join(", ")
                 )
                 .yellow()
+            );
+        }
+        let Files { input, output } = &self.files;
+        if input.is_some() || output.is_some() {
+            let input = input.as_deref().unwrap_or("stdin");
+            let output = output.as_deref().unwrap_or("stdout");
+            let _ = writeln!(
+                body,
+                "\n{}",
+                format!("This problem reads {input} and writes {output}").yellow()
             );
         }
         if self.report.passed() {

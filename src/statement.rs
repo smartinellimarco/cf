@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use anyhow::{Context, Result};
 use scraper::{ElementRef, Html, Node, Selector};
+use serde::{Deserialize, Serialize};
 
 use crate::codeforces::ProblemId;
 
@@ -15,12 +16,20 @@ pub enum Kind {
     Interactive,
 }
 
+// Old problems read input.txt and write output.txt instead of using stdin and stdout.
+#[derive(Serialize, Deserialize, Default)]
+pub struct Files {
+    pub input: Option<String>,
+    pub output: Option<String>,
+}
+
 pub struct Statement {
     pub title: String,
     pub limits: String,
     pub body: String,
     pub samples: Vec<Sample>,
     pub kind: Kind,
+    pub files: Files,
 }
 
 #[derive(Clone, Copy)]
@@ -78,6 +87,10 @@ pub fn parse(html: &str) -> Result<Statement> {
     let memory =
         first_text(statement, ".header .memory-limit").replace("memory limit per test", "");
     let limits = format!("{} · {}", time.trim(), memory.trim());
+    let files = Files {
+        input: file(&first_text(statement, ".header .input-file"), "input"),
+        output: file(&first_text(statement, ".header .output-file"), "output"),
+    };
 
     let mut body = String::new();
     let mut kind = Kind::Standard;
@@ -113,7 +126,19 @@ pub fn parse(html: &str) -> Result<Statement> {
         body,
         samples,
         kind,
+        files,
     })
+}
+
+fn file(header: &str, label: &str) -> Option<String> {
+    let name = header.trim().strip_prefix(label).unwrap_or(header).trim();
+    // Old problems say stdin and stdout, newer ones standard input and standard output.
+    let standard = name.is_empty() || name.starts_with("standard") || name.starts_with("std");
+    let path_like = name.contains(['/', '\\']);
+    if standard || path_like {
+        return None;
+    }
+    Some(name.to_string())
 }
 
 fn first_text(element: ElementRef, css: &str) -> String {
@@ -259,6 +284,18 @@ mod tests {
             https://codeforces.com/contest/1520/problem/F2?locale=en 4A"#);
         let found: Vec<String> = found.iter().map(ProblemId::to_string).collect();
         assert_eq!(found, ["4A", "1352C", "1374B", "1520F2"]);
+    }
+
+    #[test]
+    fn reads_file_names_from_the_header() {
+        assert_eq!(
+            file("inputinput.txt", "input").as_deref(),
+            Some("input.txt")
+        );
+        assert_eq!(file("inputstandard input", "input"), None);
+        assert_eq!(file("inputstdin", "input"), None);
+        assert_eq!(file("outputstdout", "output"), None);
+        assert_eq!(file("output../x", "output"), None);
     }
 
     #[test]

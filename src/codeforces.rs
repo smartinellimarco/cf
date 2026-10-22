@@ -203,7 +203,19 @@ impl Client {
 
     fn store(&self, name: &str, body: &str) -> Result<()> {
         let path = self.cache.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         std::fs::write(&path, body).with_context(|| format!("writing {}", path.display()))
+    }
+
+    pub fn load<T: DeserializeOwned>(&self, name: &str) -> Option<T> {
+        let json = std::fs::read_to_string(self.cache.join(name)).ok()?;
+        serde_json::from_str(&json).ok()
+    }
+
+    pub fn save<T: Serialize>(&self, name: &str, value: &T) -> Result<()> {
+        self.store(name, &serde_json::to_string(value)?)
     }
 
     pub fn problems(&mut self, refresh: Refresh) -> Result<Vec<Problem>> {
@@ -246,16 +258,11 @@ impl Client {
     }
 
     pub fn state(&self) -> State {
-        self.cached_state().unwrap_or_default()
-    }
-
-    fn cached_state(&self) -> Option<State> {
-        let json = std::fs::read_to_string(self.cache.join("state.json")).ok()?;
-        serde_json::from_str(&json).ok()
+        self.load("state.json").unwrap_or_default()
     }
 
     pub fn save_state(&self, state: &State) -> Result<()> {
-        self.store("state.json", &serde_json::to_string(state)?)
+        self.save("state.json", state)
     }
 }
 
