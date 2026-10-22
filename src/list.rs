@@ -13,7 +13,8 @@ pub fn resolve(
     name: Option<&str>,
 ) -> Result<PathBuf> {
     let Some(source) = source else {
-        let Some(last) = last else {
+        // The folder may have been recreated since, so a remembered list that is gone counts as none.
+        let Some(last) = last.filter(|path| path.is_file()) else {
             bail!("no list yet, run `cf <file | url | ->`");
         };
         return Ok(last.clone());
