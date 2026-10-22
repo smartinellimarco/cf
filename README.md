@@ -49,6 +49,36 @@ cf https://example.com/ladder-1200
 pbpaste | cf - div2a
 ```
 
+<details>
+<summary>Famous lists</summary>
+
+The [A2OJ ladders](https://github.com/rishabhdeepsingh/A2OJ-Ladder) by rating, named after the bottom of their range, 100 problems each, easiest first:
+
+```
+cf https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/11.%20Codeforces%20Rating%20%3C%201300/README.md a2oj-1200
+cf https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/12.%201300%20%3C%3D%20Codeforces%20Rating%20%3C%3D%201399/README.md a2oj-1300
+cf https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/13.%201400%20%3C%3D%20Codeforces%20Rating%20%3C%3D%201499/README.md a2oj-1400
+cf https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/14.%201500%20%3C%3D%20Codeforces%20Rating%20%3C%3D%201599/README.md a2oj-1500
+cf https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/15.%201600%20%3C%3D%20Codeforces%20Rating%20%3C%3D%201699/README.md a2oj-1600
+cf https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/16.%201700%20%3C%3D%20Codeforces%20Rating%20%3C%3D%201799/README.md a2oj-1700
+cf https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/17.%201800%20%3C%3D%20Codeforces%20Rating%20%3C%3D%201899/README.md a2oj-1800
+cf https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/18.%201900%20%3C%3D%20Codeforces%20Rating%20%3C%3D%201999/README.md a2oj-1900
+```
+
+The [updated ladders](https://github.com/karansinghgit/CodeForces-Ladders) by division and topic:
+
+```
+cf https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/div2A.md div2a
+cf https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/div2B.md div2b
+cf https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/div2C.md div2c
+cf https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/div2D.md div2d
+cf https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/div2E.md div2e
+cf https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/dynamicProgramming.md dp
+cf https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/strings.md strings
+```
+
+</details>
+
 ## Languages
 
 `cf.json` picks the language and says how to build and run it. Commands run with `sh` inside the problem folder:
