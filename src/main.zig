@@ -16,6 +16,7 @@ pub const Lang = struct {
 
 pub const Config = struct {
     handle: []const u8,
+    editor: []const u8 = "$EDITOR {file}",
     lang: []const u8,
     langs: std.json.ArrayHashMap(Lang),
 };

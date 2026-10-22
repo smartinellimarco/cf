@@ -24,6 +24,8 @@ cf lists/ladder.txt
 
 Each problem lives in `problems/<id>/`: `main.<ext>` with the statement as a comment on top, and `in<k>.txt`/`ans<k>.txt` samples. Add your own cases with the next free `k`.
 
+`cf` prints the command to open the problem, built from `editor` in `cf.json` with `{file}` and `{dir}` filled in, e.g. `hx --vsplit {file} {dir}/in1.txt` or `vim -O {file} {dir}/in1.txt`.
+
 Keys: `y` copies the file to submit, `o` opens the submit page, `l` lists the problems, `n` jumps to the next unsolved one, `r` reruns, `q` quits.
 
 ## Lists

@@ -1,5 +1,6 @@
 {
   "handle": "HANDLE",
+  "editor": "hx --vsplit {file} {dir}/in1.txt",
   "lang": "zig",
   "langs": {
     "zig": {

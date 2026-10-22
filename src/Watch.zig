@@ -341,7 +341,9 @@ fn render(w: *Watch) !void {
     try r.print("{s}\n{s}{d}/{d} in {s}{s}\n", .{ reset, dim, w.solved(), w.ids.len, w.path, reset });
     // OSC 8 makes the link clickable in terminals that support it.
     try r.print("\x1b]8;;{s}\x1b\\{s}\x1b]8;;\x1b\\\n", .{ problem_url, problem_url });
-    try r.print("{s}/main.{s}\n\n{s}\n", .{ try w.dir(), w.lang.ext, w.report });
+    const file = try std.fmt.allocPrint(w.gpa, "{s}/main.{s}", .{ try w.dir(), w.lang.ext });
+    const editor = try std.mem.replaceOwned(u8, w.gpa, try std.mem.replaceOwned(u8, w.gpa, w.config.editor, "{file}", file), "{dir}", try w.dir());
+    try r.print("{s}\n\n{s}\n", .{ editor, w.report });
     if (w.passed) try r.print("{s}samples ok{s} · submit {s} as {s}\n", .{ green, reset, w.lang.submit, w.lang.judge });
     if (w.verdict.len > 0) try r.print("{s}\n", .{w.verdict});
     try r.print("\n{s}y copy · o submit page · l list · n next · r rerun · q quit{s}\n", .{ dim, reset });
