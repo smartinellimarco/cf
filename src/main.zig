@@ -83,6 +83,8 @@ pub fn main(init: std.process.Init) !void {
     try cf.cache.writeFile(io, .{ .sub_path = "state.json", .data = try std.json.Stringify.valueAlloc(gpa, state, .{}) });
 
     const text = try Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited);
+    const ids = try statement.ids(gpa, text);
+    if (ids.len == 0) fail(try std.fmt.allocPrint(gpa, "no problems in {s}, a list needs ids like 4A or problem links", .{path}));
     var watch: Watch = .{
         .gpa = gpa,
         .io = io,
@@ -90,7 +92,7 @@ pub fn main(init: std.process.Init) !void {
         .config = config,
         .lang = config.langs.map.get(config.lang).?,
         .path = path,
-        .ids = try statement.ids(gpa, text),
+        .ids = ids,
         .since = state.fresh.map.get(key) orelse 0,
         .problems = try cf.problems(false),
         .submissions = try cf.submissions(config.handle),
