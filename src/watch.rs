@@ -24,7 +24,7 @@ const POLL_FOR_SECONDS: i64 = 15 * 60;
 const SLACK_SECONDS: i64 = 30;
 const OUTPUT_LINES: usize = 20;
 const NAME_WIDTH: usize = 40;
-const BAR_MAX: usize = 40;
+const DOTS_PER_ROW: usize = 50;
 const FLASH: Duration = Duration::from_secs(1);
 const COLUMN_MAX: usize = 40;
 
@@ -382,6 +382,39 @@ impl<'a> Watch<'a> {
         true
     }
 
+    // One dot per problem, so the line also shows which ones are solved, tried or pending.
+    fn progress(&self, width: usize) -> String {
+        const PREFIX: &str = "Progress: ";
+        let per_row = width.saturating_sub(PREFIX.len()).clamp(1, DOTS_PER_ROW);
+        let mut dots = Vec::new();
+        for (at, id) in self.ids.iter().enumerate() {
+            let dot = match self.status(id) {
+                Status::Solved => "●".green(),
+                Status::Tried => "●".red(),
+                Status::Todo => "○".dim(),
+                Status::Gym => continue,
+            };
+            let dot = if at == self.current {
+                dot.underlined().bold()
+            } else {
+                dot
+            };
+            dots.push(dot.to_string());
+        }
+        let mut out = String::new();
+        for (row, chunk) in dots.chunks(per_row).enumerate() {
+            let lead = if row == 0 {
+                PREFIX.to_string()
+            } else {
+                " ".repeat(PREFIX.len())
+            };
+            let _ = writeln!(out, "{lead}{}", chunk.concat());
+        }
+        out.pop();
+        let _ = write!(out, "  {}/{}", self.solved(), self.playable());
+        out
+    }
+
     fn playable(&self) -> usize {
         let mut count = 0;
         for id in &self.ids {
@@ -653,7 +686,7 @@ impl<'a> Watch<'a> {
         }
         let footer = format!(
             "{}\n{}",
-            progress(self.solved(), self.playable(), width),
+            self.progress(width),
             hotkeys(&[
                 ("j/k", "down/up"),
                 ("g/G", "first/last"),
@@ -792,7 +825,7 @@ impl<'a> Watch<'a> {
         };
         let footer = format!(
             "\n{}\nCurrent problem: \x1b]8;;{url}\x1b\\{title}\x1b]8;;\x1b\\\n\n    {editor}\n\n{}",
-            progress(self.solved(), self.playable(), width),
+            self.progress(width),
             prompt(&[
                 ("y", &copy),
                 ("o", "submit"),
@@ -806,29 +839,6 @@ impl<'a> Watch<'a> {
         body.push_str(&footer);
         (body, String::new())
     }
-}
-
-fn progress(done: usize, total: usize, width: usize) -> String {
-    const PREFIX: &str = "Progress: [";
-    let suffix = format!("] {done:>3}/{total}");
-    let Some(bar) = width
-        .checked_sub(PREFIX.len() + suffix.len())
-        .map(|bar| bar.min(BAR_MAX))
-        .filter(|bar| *bar >= 10)
-    else {
-        return format!("Progress: {done}/{total}");
-    };
-    let filled = bar * done / total.max(1);
-    let mut out = format!("{PREFIX}{}", "#".repeat(filled).green());
-    if filled < bar {
-        out.push_str(&format!(
-            "{}{}",
-            ">".green(),
-            "-".repeat(bar - filled - 1).red()
-        ));
-    }
-    out.push_str(&suffix);
-    out
 }
 
 fn prompt(keys: &[(&str, &str)]) -> String {
