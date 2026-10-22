@@ -1,7 +1,8 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use etcetera::BaseStrategy;
 use serde::Deserialize;
 
 use crate::codeforces::Handle;
@@ -29,14 +30,63 @@ fn editor() -> String {
     "$EDITOR {source}".to_string()
 }
 
+const DEFAULTS: [(&str, &str); 2] = [
+    ("config.json", include_str!("../defaults/config.json")),
+    (
+        "templates/main.cpp",
+        include_str!("../defaults/templates/main.cpp"),
+    ),
+];
+
+pub struct Dirs {
+    pub config: PathBuf,
+    pub cache: PathBuf,
+}
+
+impl Dirs {
+    pub fn new() -> Result<Dirs> {
+        let strategy = etcetera::choose_base_strategy().context("no home directory")?;
+        Ok(Dirs {
+            config: strategy.config_dir().join("cf"),
+            cache: strategy.cache_dir().join("cf"),
+        })
+    }
+
+    pub fn templates(&self) -> PathBuf {
+        self.config.join("templates")
+    }
+
+    // Builds of different solution folders must not collide, so each folder gets its own subfolder.
+    pub fn builds(&self, folder: &Path) -> PathBuf {
+        let name = folder
+            .display()
+            .to_string()
+            .replace(std::path::MAIN_SEPARATOR, "%");
+        self.cache.join("build").join(name)
+    }
+}
+
 impl Config {
-    pub fn load() -> Result<Config> {
-        let Ok(json) = std::fs::read_to_string("cf.json") else {
-            bail!("no cf.json here, run `cf init <handle>` in the folder for your solutions");
-        };
-        let config: Config = serde_json::from_str(&json).context("cf.json is invalid")?;
+    pub fn load(dirs: &Dirs) -> Result<Config> {
+        let path = dirs.config.join("config.json");
+        if !path.exists() {
+            for (name, content) in DEFAULTS {
+                let file = dirs.config.join(name);
+                if let Some(parent) = file.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                if !file.exists() {
+                    std::fs::write(&file, content)
+                        .with_context(|| format!("writing {}", file.display()))?;
+                }
+            }
+        }
+        let shown = path.display();
+        let json = std::fs::read_to_string(&path).with_context(|| format!("reading {shown}"))?;
+        let config: Config =
+            serde_json::from_str(&json).with_context(|| format!("{shown} is invalid"))?;
         if config.handle.0.is_empty() {
-            bail!("cf.json has an empty handle");
+            bail!("set your Codeforces handle in {shown}");
         }
         check_placeholders("editor", &config.editor)?;
         for (name, lang) in &config.langs {
@@ -50,7 +100,7 @@ impl Config {
         }
         if !config.langs.contains_key(&config.lang) {
             bail!(
-                "cf.json picks lang {:?} but langs has no such entry",
+                "{shown} picks lang {:?} but langs has no such entry",
                 config.lang
             );
         }
@@ -68,7 +118,7 @@ fn check_placeholders(field: &str, template: &str) -> Result<()> {
     for name in placeholders(template) {
         if !PLACEHOLDERS.contains(&name) {
             bail!(
-                "cf.json {field} uses {{{name}}}, the placeholders are {{dir}}, {{source}} and {{build}}"
+                "config {field} uses {{{name}}}, the placeholders are {{dir}}, {{source}} and {{build}}"
             );
         }
     }

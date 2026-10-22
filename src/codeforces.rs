@@ -146,14 +146,7 @@ pub fn now() -> i64 {
 }
 
 impl Client {
-    pub fn new() -> Result<Client> {
-        let base = match std::env::var_os("XDG_CACHE_HOME") {
-            Some(dir) => PathBuf::from(dir),
-            None => std::env::home_dir()
-                .context("no home directory")?
-                .join(".cache"),
-        };
-        let cache = base.join("cf");
+    pub fn new(cache: PathBuf) -> Result<Client> {
         std::fs::create_dir_all(&cache).with_context(|| format!("creating {}", cache.display()))?;
         let agent = Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(20)))
