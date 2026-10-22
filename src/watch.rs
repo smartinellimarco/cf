@@ -536,7 +536,11 @@ impl<'a> Watch<'a> {
             cursor::MoveTo(0, 0),
             terminal::Clear(terminal::ClearType::All)
         )?;
-        for (at, line) in body.lines().take(room).enumerate() {
+        let mut wrapped = Vec::new();
+        for line in body.lines() {
+            wrapped.extend(wrap(line, width));
+        }
+        for (at, line) in wrapped.iter().take(room).enumerate() {
             queue!(stdout, cursor::MoveTo(0, at as u16))?;
             stdout.write_all(line.as_bytes())?;
         }
@@ -813,4 +817,49 @@ fn diff(expected: &str, got: &str) -> String {
         out.push_str("…\n");
     }
     out
+}
+
+// Splits a line at the terminal width so a long one doesn't spill into the row drawn below it.
+// Escape sequences take no columns, so they are copied through without counting.
+fn wrap(line: &str, width: usize) -> Vec<String> {
+    let mut rows = vec![String::new()];
+    let mut column = 0;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        let Some(row) = rows.last_mut() else {
+            break;
+        };
+        if c == '\x1b' {
+            row.push(c);
+            for c in chars.by_ref() {
+                row.push(c);
+                if c.is_ascii_alphabetic() || c == '\\' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if column == width.max(1) {
+            rows.push(String::new());
+            column = 0;
+        }
+        let Some(row) = rows.last_mut() else {
+            break;
+        };
+        row.push(c);
+        column += 1;
+    }
+    rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wraps_at_width_without_counting_colors() {
+        assert_eq!(wrap("abcdefg", 3), ["abc", "def", "g"]);
+        let red = format!("{}", "abcd".red());
+        assert_eq!(wrap(&red, 4).len(), 1);
+    }
 }
