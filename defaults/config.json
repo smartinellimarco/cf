@@ -1,5 +1,5 @@
 {
-  "handle": "HANDLE",
+  "handle": "",
   "editor": "hx --vsplit {source} {dir}/in1.txt",
   "lang": "cpp",
   "langs": {

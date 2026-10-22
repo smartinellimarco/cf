@@ -13,7 +13,7 @@ use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
 
 use crate::codeforces::{self, Client, Page, Problem, ProblemId, Submission};
-use crate::config::{Config, Lang, Paths, Quote};
+use crate::config::{Config, Dirs, Lang, Paths, Quote};
 use crate::run::{self, Outcome, Report};
 use crate::statement::{self, Kind};
 
@@ -101,6 +101,8 @@ pub struct Watch<'a> {
     watched: Option<PathBuf>,
     clipboard: Option<arboard::Clipboard>,
     root: PathBuf,
+    templates: PathBuf,
+    builds: PathBuf,
     strays: Vec<String>,
 }
 
@@ -108,6 +110,7 @@ impl<'a> Watch<'a> {
     pub fn new(
         client: &'a mut Client,
         config: Config,
+        dirs: &Dirs,
         ids: Vec<ProblemId>,
         since: i64,
         problems: Vec<Problem>,
@@ -146,6 +149,8 @@ impl<'a> Watch<'a> {
             debouncer,
             watched: None,
             clipboard: None,
+            templates: dirs.templates(),
+            builds: dirs.builds(&root),
             root,
             strays: Vec::new(),
         };
@@ -276,7 +281,7 @@ impl<'a> Watch<'a> {
         let dir = self.root.join(self.dir());
         Paths {
             source: dir.join(self.source()),
-            build: dir.join("build"),
+            build: self.builds.join(self.id().to_string()),
             dir,
         }
     }
@@ -286,7 +291,7 @@ impl<'a> Watch<'a> {
         let dir = self.dir();
         Paths {
             source: dir.join(self.source()),
-            build: dir.join("build"),
+            build: self.builds.join(self.id().to_string()),
             dir,
         }
     }
@@ -302,13 +307,13 @@ impl<'a> Watch<'a> {
         names
     }
 
-    // Anything new next to the source after a build was written outside build/ and isn't ignored by git.
+    // Anything new next to the source after a build was written outside the build folder.
     fn strays(&self, before: &[String]) -> Vec<String> {
         let mut strays = Vec::new();
         for name in self.entries() {
             let sample =
                 name.ends_with(".txt") && (name.starts_with("in") || name.starts_with("ans"));
-            let known = sample || name == "build" || name == self.source();
+            let known = sample || name == self.source();
             let new = !before.contains(&name) || self.strays.contains(&name);
             if !known && new {
                 strays.push(name);
@@ -384,7 +389,7 @@ impl<'a> Watch<'a> {
         if !file.exists() {
             let url = self.id().url(Page::Problem);
             let statement = statement::parse(&self.client.get(&url)?)?;
-            let template_path = PathBuf::from("templates").join(self.source());
+            let template_path = self.templates.join(self.source());
             let template = std::fs::read_to_string(&template_path)
                 .with_context(|| format!("reading {}", template_path.display()))?;
             std::fs::create_dir_all(&dir)?;
@@ -656,7 +661,7 @@ impl<'a> Watch<'a> {
                 body,
                 "\n{}",
                 format!(
-                    "Build wrote {} outside build/, git won't ignore it",
+                    "Build wrote {} next to the source instead of {{build}}",
                     self.strays.join(", ")
                 )
                 .yellow()

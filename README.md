@@ -14,11 +14,11 @@ Or with the shell installer from the [latest release](https://github.com/smartin
 
 ```
 mkdir codeforces && cd codeforces
-cf init <handle>
 cf lists/ladder.txt
 ```
 
-- `cf init <handle>` writes `cf.json`, `.gitignore` and the language templates into the current folder.
+The first run writes the config to `~/.config/cf/` and asks for your Codeforces handle there. Any folder works as a solutions folder; `cf` keeps `lists/` and `problems/` in it and nothing else.
+
 - `cf <list>` opens the first problem of the list you have not solved and watches it.
 - `cf` alone reopens the last list.
 - `cf <list> --fresh` restarts the list: only accepted submissions from now on count.
@@ -26,7 +26,7 @@ cf lists/ladder.txt
 
 Each problem lives in `problems/<id>/`: `main.<ext>` with the statement as a comment on top, and `in<k>.txt`/`ans<k>.txt` samples. Add your own cases with the next free `k`.
 
-`cf` prints the command to open the problem, built from `editor` in `cf.json`, e.g. `hx --vsplit {source} {dir}/in1.txt` or `vim -O {source} {dir}/in1.txt`.
+`cf` prints the command to open the problem, built from `editor` in the config, e.g. `hx --vsplit {source} {dir}/in1.txt` or `vim -O {source} {dir}/in1.txt`.
 
 Keys: `y` copies the file to submit, `o` opens the submit page, `l` lists the problems, `n` jumps to the next unsolved one, `r` reruns, `q` quits.
 
@@ -79,9 +79,21 @@ cf https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/str
 
 </details>
 
+## Config
+
+`cf` follows the XDG base directories, so `XDG_CONFIG_HOME` and `XDG_CACHE_HOME` move these:
+
+| Path | Holds |
+|---|---|
+| `~/.config/cf/config.json` | handle, editor and languages |
+| `~/.config/cf/templates/main.<ext>` | the code every new problem starts from |
+| `~/.cache/cf/` | the problem set, your submissions, list progress and builds |
+
+Edit `templates/main.cpp` to start every problem with your own boilerplate: includes, macros, fast IO. A new language needs its own `templates/main.<ext>`. Problems already opened keep the code they started with.
+
 ## Languages
 
-`cf.json` picks the language and says how to build and run it:
+`config.json` picks the language and says how to build and run it:
 
 ```json
 "cpp": {
@@ -94,9 +106,9 @@ cf https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/str
 }
 ```
 
-- `ext` names the solution file, `main.<ext>`, and `templates/main.<ext>` is what a new problem starts from.
+- `ext` names the solution file, `main.<ext>`, and the template it starts from.
 - `comment` prefixes the statement copied on top of the solution.
-- `build` and `run` are `sh` commands that run inside `problems/<id>/build/`, so whatever they write lands there, and `.gitignore` ignores that folder for every language. `run` gets each sample on stdin.
+- `build` and `run` are `sh` commands that run inside the problem's build folder in the cache, so whatever they write stays out of the solutions folder. `run` gets each sample on stdin.
 - `submit` is the file `y` copies. It can be the source or something the build made.
 - `judge` is the Codeforces language to pick when submitting.
 
@@ -106,6 +118,6 @@ Commands and `editor` can use these placeholders, which `cf` fills in with absol
 |---|---|
 | `{source}` | `problems/<id>/main.<ext>` |
 | `{dir}` | `problems/<id>` |
-| `{build}` | `problems/<id>/build` |
+| `{build}` | the problem's build folder, under `~/.cache/cf/build/` |
 
-`cf` rejects unknown placeholders when it loads `cf.json`. If a build leaves a file next to the source anyway, `cf` warns that git won't ignore it.
+`cf` rejects unknown placeholders when it loads the config. If a build leaves a file next to the source anyway, `cf` warns about it.
