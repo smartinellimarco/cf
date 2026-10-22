@@ -30,6 +30,7 @@ enum Status {
     Solved,
     Tried,
     Todo,
+    Gym,
 }
 
 enum View {
@@ -329,6 +330,9 @@ impl<'a> Watch<'a> {
     }
 
     fn status(&self, id: &ProblemId) -> Status {
+        if id.is_gym() {
+            return Status::Gym;
+        }
         let mut tried = false;
         for submission in &self.submissions {
             if submission.creation_time_seconds < self.since
@@ -348,7 +352,7 @@ impl<'a> Watch<'a> {
         for offset in 0..self.ids.len() {
             let at = (from + offset) % self.ids.len();
             match self.status(&self.ids[at]) {
-                Status::Solved => {}
+                Status::Solved | Status::Gym => {}
                 Status::Tried | Status::Todo => return at,
             }
         }
@@ -360,7 +364,7 @@ impl<'a> Watch<'a> {
         for id in &self.ids {
             match self.status(id) {
                 Status::Solved => count += 1,
-                Status::Tried | Status::Todo => {}
+                Status::Tried | Status::Todo | Status::Gym => {}
             }
         }
         count
@@ -379,6 +383,13 @@ impl<'a> Watch<'a> {
         self.strays.clear();
         self.verdict = Verdict::Idle;
         self.pending = None;
+        if self.id().is_gym() {
+            self.report = Report::Failed(format!(
+                "{} is a gym problem, cf can't open those because their statements aren't public pages",
+                self.id()
+            ));
+            return;
+        }
         match self.prepare() {
             Ok(()) => self.stale = true,
             Err(error) => self.report = Report::Failed(format!("{error:#}, press r to retry")),
@@ -594,6 +605,7 @@ impl<'a> Watch<'a> {
                 Status::Solved => "DONE   ".green(),
                 Status::Tried => "TRIED  ".red(),
                 Status::Todo => "PENDING".yellow(),
+                Status::Gym => "GYM    ".dim(),
             };
             let row = format!(
                 "{current}{state}  {:<8} {name:<NAME_WIDTH$} {rating}",
