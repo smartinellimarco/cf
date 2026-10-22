@@ -640,7 +640,7 @@ impl<'a> Watch<'a> {
         };
         // OSC 8 makes the link clickable in terminals that support it.
         let footer = format!(
-            "\n{}\nCurrent problem: \x1b]8;;{url}\x1b\\{title}\x1b]8;;\x1b\\\nEdit: {editor}\n\n{}",
+            "\n{}\nCurrent problem: \x1b]8;;{url}\x1b\\{title}\x1b]8;;\x1b\\\n\n    {editor}\n\n{}",
             progress(self.solved(), self.ids.len(), width),
             prompt(&[
                 ("y", "copy"),
