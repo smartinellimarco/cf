@@ -101,7 +101,6 @@ pub struct Watch<'a> {
     watched: Option<PathBuf>,
     clipboard: Option<arboard::Clipboard>,
     root: PathBuf,
-    cache: PathBuf,
     strays: Vec<String>,
 }
 
@@ -128,7 +127,6 @@ impl<'a> Watch<'a> {
         .context("starting the file watcher")?;
         let lang = config.lang().clone();
         let root = std::env::current_dir()?;
-        let cache = client.cache().to_path_buf();
         let mut watch = Watch {
             client,
             config,
@@ -149,7 +147,6 @@ impl<'a> Watch<'a> {
             watched: None,
             clipboard: None,
             root,
-            cache,
             strays: Vec::new(),
         };
         watch.current = watch.next(0);
@@ -278,10 +275,8 @@ impl<'a> Watch<'a> {
     fn paths(&self) -> Paths {
         let dir = self.root.join(self.dir());
         Paths {
-            root: self.root.clone(),
             source: dir.join(self.source()),
             build: dir.join("build"),
-            cache: self.cache.clone(),
             dir,
         }
     }
@@ -290,10 +285,8 @@ impl<'a> Watch<'a> {
     fn shown(&self) -> Paths {
         let dir = self.dir();
         Paths {
-            root: PathBuf::from("."),
             source: dir.join(self.source()),
             build: dir.join("build"),
-            cache: self.cache.clone(),
             dir,
         }
     }

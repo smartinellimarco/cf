@@ -38,15 +38,9 @@ enum Command {
     Sync,
 }
 
-const ASSETS: [(&str, &str); 6] = [
+const ASSETS: [(&str, &str); 3] = [
     ("cf.json", include_str!("../init/cf.json")),
     (".gitignore", include_str!("../init/gitignore")),
-    ("zig/shim.zig", include_str!("../init/zig/shim.zig")),
-    ("zig/run.js", include_str!("../init/zig/run.js")),
-    (
-        "templates/main.zig",
-        include_str!("../init/templates/main.zig"),
-    ),
     (
         "templates/main.cpp",
         include_str!("../init/templates/main.cpp"),

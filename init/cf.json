@@ -1,16 +1,8 @@
 {
   "handle": "HANDLE",
   "editor": "hx --vsplit {source} {dir}/in1.txt",
-  "lang": "zig",
+  "lang": "cpp",
   "langs": {
-    "zig": {
-      "ext": "zig",
-      "comment": "//",
-      "build": "zig build-exe -target wasm32-freestanding -fno-entry -OReleaseSmall -rdynamic --cache-dir {cache}/zig --dep solution -Mroot={root}/zig/shim.zig -Msolution={source} -femit-bin=main.wasm && { echo '/*'; cat {source}; echo '*/'; echo \"const WASM = '$(base64 < main.wasm | tr -d '\\n')'\"; cat {root}/zig/run.js; } > submit.js",
-      "run": "node submit.js",
-      "submit": "{build}/submit.js",
-      "judge": "Node.js 15.8.0"
-    },
     "cpp": {
       "ext": "cpp",
       "comment": "//",
