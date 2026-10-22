@@ -18,7 +18,7 @@ cf init <handle>
 cf lists/ladder.txt
 ```
 
-- `cf init <handle>` writes `cf.json`, the language templates and the Zig runtime into the current folder.
+- `cf init <handle>` writes `cf.json`, `.gitignore` and the language templates into the current folder.
 - `cf <list>` opens the first problem of the list you have not solved and watches it.
 - `cf` alone reopens the last list.
 - `cf <list> --fresh` restarts the list: only accepted submissions from now on count.
@@ -107,7 +107,5 @@ Commands and `editor` can use these placeholders, which `cf` fills in with absol
 | `{source}` | `problems/<id>/main.<ext>` |
 | `{dir}` | `problems/<id>` |
 | `{build}` | `problems/<id>/build` |
-| `{root}` | the folder with `cf.json` |
-| `{cache}` | `cf`'s cache, `~/.cache/cf`, shared by every problem |
 
 `cf` rejects unknown placeholders when it loads `cf.json`. If a build leaves a file next to the source anyway, `cf` warns that git won't ignore it.

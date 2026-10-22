@@ -62,13 +62,13 @@ impl Config {
     }
 }
 
-const PLACEHOLDERS: [&str; 5] = ["root", "dir", "source", "build", "cache"];
+const PLACEHOLDERS: [&str; 3] = ["dir", "source", "build"];
 
 fn check_placeholders(field: &str, template: &str) -> Result<()> {
     for name in placeholders(template) {
         if !PLACEHOLDERS.contains(&name) {
             bail!(
-                "cf.json {field} uses {{{name}}}, the placeholders are {{root}}, {{dir}}, {{source}}, {{build}} and {{cache}}"
+                "cf.json {field} uses {{{name}}}, the placeholders are {{dir}}, {{source}} and {{build}}"
             );
         }
     }
@@ -92,11 +92,9 @@ fn placeholders(template: &str) -> Vec<&str> {
 }
 
 pub struct Paths {
-    pub root: PathBuf,
     pub dir: PathBuf,
     pub source: PathBuf,
     pub build: PathBuf,
-    pub cache: PathBuf,
 }
 
 pub enum Quote {
@@ -106,21 +104,9 @@ pub enum Quote {
 
 impl Paths {
     pub fn expand(&self, template: &str, quote: Quote) -> String {
-        let Paths {
-            root,
-            dir,
-            source,
-            build,
-            cache,
-        } = self;
+        let Paths { dir, source, build } = self;
         let mut out = template.to_string();
-        for (name, path) in [
-            ("root", root),
-            ("dir", dir),
-            ("source", source),
-            ("build", build),
-            ("cache", cache),
-        ] {
+        for (name, path) in [("dir", dir), ("source", source), ("build", build)] {
             let path = path.display().to_string();
             let value = match quote {
                 Quote::Shell => shell_quote(&path),
@@ -152,7 +138,7 @@ mod tests {
 
     #[test]
     fn quotes_paths_only_when_needed() {
-        assert_eq!(shell_quote("/tmp/a-b/main.zig"), "/tmp/a-b/main.zig");
+        assert_eq!(shell_quote("/tmp/a-b/main.cpp"), "/tmp/a-b/main.cpp");
         assert_eq!(shell_quote("/tmp/my dir/it's"), "'/tmp/my dir/it'\\''s'");
     }
 }

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -164,10 +164,6 @@ impl Client {
             cache,
             last_call: None,
         })
-    }
-
-    pub fn cache(&self) -> &Path {
-        &self.cache
     }
 
     pub fn get(&self, url: &str) -> Result<String> {
