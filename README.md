@@ -5,8 +5,10 @@ Rustlings-style Codeforces practice: run a list of problems, write the solution 
 ## Install
 
 ```
-cargo install --path .
+brew install smartinellimarco/tap/cf
 ```
+
+Or with the shell installer from the [latest release](https://github.com/smartinellimarco/cf/releases/latest), or from source with `cargo install --path .`.
 
 ## Use
 

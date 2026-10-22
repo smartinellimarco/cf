@@ -1,0 +1,15 @@
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.33.1"
+ci = "github"
+installers = ["shell", "homebrew"]
+# cf shells out to sh and kills process groups, so it only runs on unix.
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]
+install-path = "CARGO_HOME"
+hosting = "github"
+install-updater = false
+tap = "smartinellimarco/homebrew-tap"
+publish-jobs = ["homebrew"]
+formula = "cf"

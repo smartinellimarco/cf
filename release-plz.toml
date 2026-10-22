@@ -1,0 +1,5 @@
+[workspace]
+# cf isn't on crates.io, so versions come from git tags.
+git_only = true
+# dist creates the GitHub release with the binaries when the tag lands.
+git_release_enable = false
