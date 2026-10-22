@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -25,7 +26,7 @@ pub struct Lang {
 }
 
 fn editor() -> String {
-    "$EDITOR {file}".to_string()
+    "$EDITOR {source}".to_string()
 }
 
 impl Config {
@@ -36,6 +37,16 @@ impl Config {
         let config: Config = serde_json::from_str(&json).context("cf.json is invalid")?;
         if config.handle.0.is_empty() {
             bail!("cf.json has an empty handle");
+        }
+        check_placeholders("editor", &config.editor)?;
+        for (name, lang) in &config.langs {
+            for (field, template) in [
+                ("build", &lang.build),
+                ("run", &lang.run),
+                ("submit", &lang.submit),
+            ] {
+                check_placeholders(&format!("langs.{name}.{field}"), template)?;
+            }
         }
         if !config.langs.contains_key(&config.lang) {
             bail!(
@@ -48,5 +59,100 @@ impl Config {
 
     pub fn lang(&self) -> &Lang {
         &self.langs[&self.lang]
+    }
+}
+
+const PLACEHOLDERS: [&str; 5] = ["root", "dir", "source", "build", "cache"];
+
+fn check_placeholders(field: &str, template: &str) -> Result<()> {
+    for name in placeholders(template) {
+        if !PLACEHOLDERS.contains(&name) {
+            bail!(
+                "cf.json {field} uses {{{name}}}, the placeholders are {{root}}, {{dir}}, {{source}}, {{build}} and {{cache}}"
+            );
+        }
+    }
+    Ok(())
+}
+
+// A placeholder is {word}; shell braces like `{ echo; }` have a space after the brace and are left alone.
+fn placeholders(template: &str) -> Vec<&str> {
+    let mut found = Vec::new();
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        rest = &rest[open + 1..];
+        let Some(close) = rest.find(|c: char| !c.is_ascii_lowercase()) else {
+            break;
+        };
+        if close > 0 && rest[close..].starts_with('}') {
+            found.push(&rest[..close]);
+        }
+    }
+    found
+}
+
+pub struct Paths {
+    pub root: PathBuf,
+    pub dir: PathBuf,
+    pub source: PathBuf,
+    pub build: PathBuf,
+    pub cache: PathBuf,
+}
+
+pub enum Quote {
+    Shell,
+    Plain,
+}
+
+impl Paths {
+    pub fn expand(&self, template: &str, quote: Quote) -> String {
+        let Paths {
+            root,
+            dir,
+            source,
+            build,
+            cache,
+        } = self;
+        let mut out = template.to_string();
+        for (name, path) in [
+            ("root", root),
+            ("dir", dir),
+            ("source", source),
+            ("build", build),
+            ("cache", cache),
+        ] {
+            let path = path.display().to_string();
+            let value = match quote {
+                Quote::Shell => shell_quote(&path),
+                Quote::Plain => path,
+            };
+            out = out.replace(&format!("{{{name}}}"), &value);
+        }
+        out
+    }
+}
+
+fn shell_quote(text: &str) -> String {
+    let safe = |c: char| c.is_ascii_alphanumeric() || "/._-+".contains(c);
+    if !text.is_empty() && text.chars().all(safe) {
+        return text.to_string();
+    }
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_placeholders_but_not_shell_braces() {
+        let found = placeholders("{ echo '/*'; cat {source}; } > {build}/x {Bad} {}");
+        assert_eq!(found, ["source", "build"]);
+    }
+
+    #[test]
+    fn quotes_paths_only_when_needed() {
+        assert_eq!(shell_quote("/tmp/a-b/main.zig"), "/tmp/a-b/main.zig");
+        assert_eq!(shell_quote("/tmp/my dir/it's"), "'/tmp/my dir/it'\\''s'");
     }
 }

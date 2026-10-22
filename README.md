@@ -26,7 +26,7 @@ cf lists/ladder.txt
 
 Each problem lives in `problems/<id>/`: `main.<ext>` with the statement as a comment on top, and `in<k>.txt`/`ans<k>.txt` samples. Add your own cases with the next free `k`.
 
-`cf` prints the command to open the problem, built from `editor` in `cf.json` with `{file}` and `{dir}` filled in, e.g. `hx --vsplit {file} {dir}/in1.txt` or `vim -O {file} {dir}/in1.txt`.
+`cf` prints the command to open the problem, built from `editor` in `cf.json`, e.g. `hx --vsplit {source} {dir}/in1.txt` or `vim -O {source} {dir}/in1.txt`.
 
 Keys: `y` copies the file to submit, `o` opens the submit page, `l` lists the problems, `n` jumps to the next unsolved one, `r` reruns, `q` quits.
 
@@ -51,17 +51,35 @@ pbpaste | cf - div2a
 
 ## Languages
 
-`cf.json` picks the language and says how to build and run it. Commands run with `sh` inside the problem folder:
+`cf.json` picks the language and says how to build and run it:
 
 ```json
 "cpp": {
   "ext": "cpp",
   "comment": "//",
-  "build": "clang++ -std=c++20 -O2 -o main main.cpp",
+  "build": "clang++ -std=c++20 -O2 -o main {source}",
   "run": "./main",
-  "submit": "main.cpp",
+  "submit": "{source}",
   "judge": "GNU G++20"
 }
 ```
+
+- `ext` names the solution file, `main.<ext>`, and `templates/main.<ext>` is what a new problem starts from.
+- `comment` prefixes the statement copied on top of the solution.
+- `build` and `run` are `sh` commands that run inside `problems/<id>/build/`, so whatever they write lands there, and `.gitignore` ignores that folder for every language. `run` gets each sample on stdin.
+- `submit` is the file `y` copies. It can be the source or something the build made.
+- `judge` is the Codeforces language to pick when submitting.
+
+Commands and `editor` can use these placeholders, which `cf` fills in with absolute paths quoted for `sh`:
+
+| Placeholder | Path |
+|---|---|
+| `{source}` | `problems/<id>/main.<ext>` |
+| `{dir}` | `problems/<id>` |
+| `{build}` | `problems/<id>/build` |
+| `{root}` | the folder with `cf.json` |
+| `{cache}` | `cf`'s cache, `~/.cache/cf`, shared by every problem |
+
+`cf` rejects unknown placeholders when it loads `cf.json`. If a build leaves a file next to the source anyway, `cf` warns that git won't ignore it.
 
 Codeforces has no Zig, so the `zig` language compiles the solution to WebAssembly and packs it into `submit.js`, which runs on the judge's Node.js 15.8. The samples run that same file. Write `solve(in, out)` in `main.zig` and submit `submit.js` as Node.js.
