@@ -1,0 +1,5 @@
+.zig-cache/
+*.wasm
+*.o
+submit.js
+problems/*/main

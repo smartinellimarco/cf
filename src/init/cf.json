@@ -1,0 +1,22 @@
+{
+  "handle": "HANDLE",
+  "lang": "zig",
+  "langs": {
+    "zig": {
+      "ext": "zig",
+      "comment": "//",
+      "build": "zig build-exe -target wasm32-freestanding -fno-entry -OReleaseSmall -rdynamic --cache-dir ../../.zig-cache --dep solution -Mroot=../../zig/shim.zig -Msolution=main.zig -femit-bin=main.wasm && { echo '/*'; cat main.zig; echo '*/'; echo \"const WASM = '$(base64 < main.wasm | tr -d '\\n')'\"; cat ../../zig/run.js; } > submit.js",
+      "run": "node submit.js",
+      "submit": "submit.js",
+      "judge": "Node.js 15.8.0"
+    },
+    "cpp": {
+      "ext": "cpp",
+      "comment": "//",
+      "build": "clang++ -std=c++20 -O2 -o main main.cpp",
+      "run": "./main",
+      "submit": "main.cpp",
+      "judge": "GNU G++20"
+    }
+  }
+}
