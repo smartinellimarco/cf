@@ -47,8 +47,8 @@ pub fn loop(w: *Watch) !void {
     // Ctrl-C arrives as a key so the terminal is always restored.
     raw.lflag.ISIG = false;
     // read returns after 100 ms without a key, which doubles as the file watch tick.
-    raw.cc[@intFromEnum(std.posix.V.MIN)] = 0;
-    raw.cc[@intFromEnum(std.posix.V.TIME)] = 1;
+    raw.cc[@backingInt(std.posix.V.MIN)] = 0;
+    raw.cc[@backingInt(std.posix.V.TIME)] = 1;
     try std.posix.tcsetattr(tty.handle, .NOW, raw);
     defer std.posix.tcsetattr(tty.handle, .NOW, original) catch {};
     try w.write("\x1b[?1049h\x1b[?25l");

@@ -43,6 +43,7 @@ pub fn main(init: std.process.Init) !void {
     const command = if (args.len > 1) args[1] else "";
 
     if (std.mem.eql(u8, command, "init")) {
+        if (args.len < 3) fail("usage: cf init <handle>");
         const cwd = Io.Dir.cwd();
         inline for (assets) |asset| {
             if (std.fs.path.dirname(asset[0])) |dir| try cwd.createDirPath(io, dir);
@@ -58,7 +59,11 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    const config = try std.json.parseFromSliceLeaky(Config, gpa, try Io.Dir.cwd().readFileAlloc(io, "cf.json", gpa, .unlimited), .{});
+    const json = Io.Dir.cwd().readFileAlloc(io, "cf.json", gpa, .unlimited) catch |err| switch (err) {
+        error.FileNotFound => fail("no cf.json here, run `cf init <handle>` in the folder for your solutions"),
+        else => return err,
+    };
+    const config = try std.json.parseFromSliceLeaky(Config, gpa, json, .{});
 
     if (std.mem.eql(u8, command, "sync")) {
         _ = try cf.problems(true);
@@ -70,7 +75,7 @@ pub fn main(init: std.process.Init) !void {
     const root = try std.process.currentPathAlloc(io, gpa);
     const fresh = args.len > 1 and std.mem.eql(u8, args[args.len - 1], "--fresh");
     const sources = args[1 .. args.len - @intFromBool(fresh)];
-    const path = if (sources.len > 0) try list(gpa, io, &cf, sources) else state.last orelse return error.NoList;
+    const path = if (sources.len > 0) try list(gpa, io, &cf, sources) else state.last orelse fail("no list yet, run `cf <file | url | ->`");
     const key = try std.fs.path.join(gpa, &.{ root, path });
 
     state.last = path;
@@ -91,6 +96,11 @@ pub fn main(init: std.process.Init) !void {
         .submissions = try cf.submissions(config.handle),
     };
     try watch.loop();
+}
+
+fn fail(message: []const u8) noreturn {
+    std.debug.print("{s}\n", .{message});
+    std.process.exit(1);
 }
 
 fn list(gpa: Allocator, io: Io, cf: *codeforces.Client, sources: []const [:0]const u8) ![]const u8 {
