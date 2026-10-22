@@ -93,5 +93,3 @@ cf https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/str
   "judge": "GNU G++20"
 }
 ```
-
-Codeforces has no Zig, so the `zig` language compiles the solution to WebAssembly and packs it into `submit.js`, which runs on the judge's Node.js 15.8. The samples run that same file. Write `solve(in, out)` in `main.zig` and submit `submit.js` as Node.js.
