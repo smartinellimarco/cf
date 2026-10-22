@@ -237,6 +237,15 @@ impl Client {
         Ok(set.problems)
     }
 
+    pub fn problems_age(&self) -> Duration {
+        let modified =
+            std::fs::metadata(self.cache.join("problems.json")).and_then(|m| m.modified());
+        let Ok(modified) = modified else {
+            return Duration::MAX;
+        };
+        modified.elapsed().unwrap_or_default()
+    }
+
     pub fn submissions(&mut self, handle: &Handle) -> Result<Vec<Submission>> {
         let name = format!("status-{handle}.json");
         let url = format!("https://codeforces.com/api/user.status?handle={handle}");
