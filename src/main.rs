@@ -7,13 +7,15 @@ mod watch;
 
 use std::process::ExitCode;
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
+use std::time::Duration;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 
-use crate::codeforces::{Client, Handle, Refresh};
+use crate::codeforces::{Client, Handle, Problem, ProblemId, Refresh};
 use crate::config::{Config, Dirs};
 use crate::watch::Watch;
 
@@ -38,6 +40,8 @@ enum Command {
     #[command(about = "Refresh the problem set and your submissions")]
     Sync,
 }
+
+const PROBLEMSET_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -95,6 +99,21 @@ fn ask_handle() -> Result<Handle> {
     Ok(Handle(handle.to_string()))
 }
 
+fn unknown(ids: &[ProblemId], problems: &[Problem]) -> bool {
+    let mut known = HashSet::new();
+    for problem in problems {
+        if let Some(id) = problem.id() {
+            known.insert(id);
+        }
+    }
+    for id in ids {
+        if !id.is_gym() && !known.contains(id) {
+            return true;
+        }
+    }
+    false
+}
+
 fn practice(
     client: &mut Client,
     dirs: &Dirs,
@@ -116,7 +135,11 @@ fn practice(
     state.last.insert(folder, path);
     client.save_state(&state)?;
 
-    let problems = client.problems(Refresh::Cached)?;
+    let mut problems = client.problems(Refresh::Cached)?;
+    // A problem the API doesn't list would otherwise trigger a 2 MB download on every start.
+    if unknown(&ids, &problems) && client.problems_age() > PROBLEMSET_MAX_AGE {
+        problems = client.problems(Refresh::Fetch)?;
+    }
     let submissions = client.submissions(&config.handle)?;
     let mut watch = Watch::new(client, config, dirs, ids, since, problems, submissions)?;
     watch.run()
