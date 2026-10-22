@@ -24,6 +24,8 @@ const POLL_FOR_SECONDS: i64 = 15 * 60;
 const SLACK_SECONDS: i64 = 30;
 const OUTPUT_LINES: usize = 20;
 const NAME_WIDTH: usize = 40;
+const BAR_MAX: usize = 40;
+const FLASH: Duration = Duration::from_secs(1);
 const COLUMN_MAX: usize = 40;
 
 enum Status {
@@ -94,6 +96,7 @@ pub struct Watch<'a> {
     view: View,
     report: Report,
     note: String,
+    copied: Option<Instant>,
     verdict: Verdict,
     pending: Option<Pending>,
     stale: bool,
@@ -144,6 +147,7 @@ impl<'a> Watch<'a> {
             view: View::Problem,
             report: Report::Building,
             note: String::new(),
+            copied: None,
             verdict: Verdict::Idle,
             pending: None,
             stale: false,
@@ -219,6 +223,11 @@ impl<'a> Watch<'a> {
             if self.poll() {
                 dirty = true;
             }
+
+            if self.copied.is_some_and(|at| at.elapsed() > FLASH) {
+                self.copied = None;
+                dirty = true;
+            }
         }
     }
 
@@ -262,8 +271,12 @@ impl<'a> Watch<'a> {
                     }
                 }
                 KeyCode::Char('n') => {
-                    self.current = self.next(self.current + 1);
-                    self.open();
+                    if self.finished() {
+                        self.note = format!("{}", "Every problem in this list is solved ✓".green());
+                    } else {
+                        self.current = self.next(self.current + 1);
+                        self.open();
+                    }
                 }
                 KeyCode::Char('r') => self.open(),
                 _ => {}
@@ -357,6 +370,26 @@ impl<'a> Watch<'a> {
             }
         }
         from % self.ids.len()
+    }
+
+    fn finished(&self) -> bool {
+        for id in &self.ids {
+            match self.status(id) {
+                Status::Solved | Status::Gym => {}
+                Status::Tried | Status::Todo => return false,
+            }
+        }
+        true
+    }
+
+    fn playable(&self) -> usize {
+        let mut count = 0;
+        for id in &self.ids {
+            if !id.is_gym() {
+                count += 1;
+            }
+        }
+        count
     }
 
     fn solved(&self) -> usize {
@@ -474,7 +507,8 @@ impl<'a> Watch<'a> {
         };
         match clipboard.set_text(source) {
             Ok(()) => {
-                self.note = format!("copied {}", self.lang.submit);
+                self.note.clear();
+                self.copied = Some(Instant::now());
                 self.expect();
             }
             Err(error) => self.note = format!("copy failed: {error}"),
@@ -619,7 +653,7 @@ impl<'a> Watch<'a> {
         }
         let footer = format!(
             "{}\n{}",
-            progress(self.solved(), self.ids.len(), width),
+            progress(self.solved(), self.playable(), width),
             hotkeys(&[
                 ("j/k", "down/up"),
                 ("g/G", "first/last"),
@@ -752,11 +786,15 @@ impl<'a> Watch<'a> {
             | Verdict::Rejected { .. } => "next".to_string(),
         };
         // OSC 8 makes the link clickable in terminals that support it.
+        let copy = match self.copied {
+            Some(_) => "copied ✓".green().to_string(),
+            None => "copy".to_string(),
+        };
         let footer = format!(
             "\n{}\nCurrent problem: \x1b]8;;{url}\x1b\\{title}\x1b]8;;\x1b\\\n\n    {editor}\n\n{}",
-            progress(self.solved(), self.ids.len(), width),
+            progress(self.solved(), self.playable(), width),
             prompt(&[
-                ("y", "copy"),
+                ("y", &copy),
                 ("o", "submit"),
                 ("n", &next),
                 ("r", "rerun"),
@@ -775,6 +813,7 @@ fn progress(done: usize, total: usize, width: usize) -> String {
     let suffix = format!("] {done:>3}/{total}");
     let Some(bar) = width
         .checked_sub(PREFIX.len() + suffix.len())
+        .map(|bar| bar.min(BAR_MAX))
         .filter(|bar| *bar >= 10)
     else {
         return format!("Progress: {done}/{total}");
