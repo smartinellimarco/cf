@@ -5,7 +5,7 @@ Rustlings-style Codeforces practice: run a list of problems, write the solution 
 ## Install
 
 ```
-zig build -Doptimize=ReleaseFast --prefix ~/.local
+cargo install --path .
 ```
 
 ## Use
