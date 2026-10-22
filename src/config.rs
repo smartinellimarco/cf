@@ -85,9 +85,6 @@ impl Config {
         let json = std::fs::read_to_string(&path).with_context(|| format!("reading {shown}"))?;
         let config: Config =
             serde_json::from_str(&json).with_context(|| format!("{shown} is invalid"))?;
-        if config.handle.0.is_empty() {
-            bail!("set your Codeforces handle in {shown}");
-        }
         check_placeholders("editor", &config.editor)?;
         for (name, lang) in &config.langs {
             for (field, template) in [
@@ -105,6 +102,17 @@ impl Config {
             );
         }
         Ok(config)
+    }
+
+    pub fn save_handle(&mut self, dirs: &Dirs, handle: Handle) -> Result<()> {
+        let path = dirs.config.join("config.json");
+        let json = std::fs::read_to_string(&path)?;
+        let mut value: serde_json::Value = serde_json::from_str(&json)?;
+        value["handle"] = serde_json::Value::String(handle.0.clone());
+        std::fs::write(&path, serde_json::to_string_pretty(&value)? + "\n")
+            .with_context(|| format!("writing {}", path.display()))?;
+        self.handle = handle;
+        Ok(())
     }
 
     pub fn lang(&self) -> &Lang {

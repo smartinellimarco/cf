@@ -7,10 +7,13 @@ mod watch;
 
 use std::process::ExitCode;
 
-use anyhow::Result;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Write};
+
+use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 
-use crate::codeforces::{Client, Refresh};
+use crate::codeforces::{Client, Handle, Refresh};
 use crate::config::{Config, Dirs};
 use crate::watch::Watch;
 
@@ -49,8 +52,13 @@ fn main() -> ExitCode {
 
 fn start(cli: Cli) -> Result<()> {
     let dirs = Dirs::new()?;
-    let config = Config::load(&dirs)?;
+    let mut config = Config::load(&dirs)?;
     let mut client = Client::new(dirs.cache.clone())?;
+    if config.handle.0.is_empty() {
+        let handle = ask_handle()?;
+        client.check_handle(&handle)?;
+        config.save_handle(&dirs, handle)?;
+    }
     match cli.command {
         Some(Command::Sync) => {
             client.problems(Refresh::Fetch)?;
@@ -66,6 +74,25 @@ fn start(cli: Cli) -> Result<()> {
             cli.fresh,
         ),
     }
+}
+
+// Reads from the terminal itself because stdin may be a piped list.
+fn ask_handle() -> Result<Handle> {
+    let Ok(mut tty) = File::options().read(true).write(true).open("/dev/tty") else {
+        bail!("no Codeforces handle yet and no terminal to ask for it");
+    };
+    write!(tty, "Codeforces handle: ")?;
+    let mut line = String::new();
+    BufReader::new(&tty).read_line(&mut line)?;
+    let handle = line.trim();
+    if handle.is_empty() {
+        bail!("cf needs your Codeforces handle to know what you solved");
+    }
+    let valid = |c: char| c.is_ascii_alphanumeric() || "_-.".contains(c);
+    if !handle.chars().all(valid) {
+        bail!("{handle:?} is not a Codeforces handle");
+    }
+    Ok(Handle(handle.to_string()))
 }
 
 fn practice(
