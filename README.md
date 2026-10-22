@@ -17,7 +17,7 @@ mkdir codeforces && cd codeforces
 cf lists/ladder.txt
 ```
 
-The first run writes the config to `~/.config/cf/` and asks for your Codeforces handle there. Any folder works as a solutions folder; `cf` keeps `lists/` and `problems/` in it and nothing else.
+The first run writes the config to `~/.config/cf/` and asks for your Codeforces handle, which it checks against Codeforces before saving. Any folder works as a solutions folder; `cf` keeps `lists/` and `problems/` in it and nothing else.
 
 - `cf <list>` opens the first problem of the list you have not solved and watches it.
 - `cf` alone reopens the last list.

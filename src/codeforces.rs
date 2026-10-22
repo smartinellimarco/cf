@@ -148,8 +148,10 @@ pub fn now() -> i64 {
 impl Client {
     pub fn new(cache: PathBuf) -> Result<Client> {
         std::fs::create_dir_all(&cache).with_context(|| format!("creating {}", cache.display()))?;
+        // The API reports errors like an unknown handle in the body of a 4xx response.
         let agent = Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(20)))
+            .http_status_as_error(false)
             .build()
             .into();
         Ok(Client {
@@ -160,6 +162,14 @@ impl Client {
     }
 
     pub fn get(&self, url: &str) -> Result<String> {
+        let (status, body) = self.fetch(url)?;
+        if !(200..300).contains(&status) {
+            bail!("fetching {url}: http status {status}");
+        }
+        Ok(body)
+    }
+
+    fn fetch(&self, url: &str) -> Result<(u16, String)> {
         // Without a browser user agent Cloudflare answers problem pages with a challenge.
         let mut response = self
             .agent
@@ -167,12 +177,13 @@ impl Client {
             .header("User-Agent", "Mozilla/5.0")
             .call()
             .with_context(|| format!("fetching {url}"))?;
+        let status = response.status().as_u16();
         let body = response
             .body_mut()
             .with_config()
             .limit(64 << 20)
             .read_to_string()?;
-        Ok(body)
+        Ok((status, body))
     }
 
     fn api<T: DeserializeOwned>(&mut self, url: &str) -> Result<(T, String)> {
@@ -180,7 +191,7 @@ impl Client {
             std::thread::sleep(API_INTERVAL.saturating_sub(last_call.elapsed()));
         }
         self.last_call = Some(Instant::now());
-        let body = self.get(url)?;
+        let (_, body) = self.fetch(url)?;
         let result = parse(&body)?;
         Ok((result, body))
     }
@@ -220,6 +231,12 @@ impl Client {
                 None => Err(error),
             },
         }
+    }
+
+    pub fn check_handle(&mut self, handle: &Handle) -> Result<()> {
+        let url = format!("https://codeforces.com/api/user.info?handles={handle}");
+        let _: Vec<serde::de::IgnoredAny> = self.api(&url)?.0;
+        Ok(())
     }
 
     pub fn latest(&mut self, handle: &Handle) -> Result<Vec<Submission>> {
