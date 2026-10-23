@@ -6,6 +6,7 @@
     "cpp": {
       "ext": "cpp",
       "icon": "",
+      "color": "blue",
       "comment": "//",
       "build": "clang++ -std=c++20 -O2 -o main {source}",
       "run": "./main",

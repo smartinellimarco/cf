@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crossterm::style::Stylize;
+use crossterm::style::{Color, Stylize};
 use crossterm::{cursor, execute, queue, terminal};
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
@@ -48,12 +48,15 @@ enum Status {
     Todo,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Local {
-    Pending,
-    Ran { passed: bool, at: i64 },
+    Running,
+    Pass,
+    Fail,
+    NoSamples,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Mark {
     Accepted,
     Rejected,
@@ -92,6 +95,10 @@ enum Action {
     Continue,
     Quit,
 }
+
+// A grid column: its cells, whether it is the current problem, and whether it has several
+// solutions.
+type Column<'a> = (Vec<String>, bool, bool, &'a ProblemId);
 
 // A verdict, plus the submission once it is final.
 type Update = (Verdict, Option<Submission>);
@@ -305,16 +312,13 @@ impl<'a> Watch<'a> {
                 self.rerun = false;
                 match stored {
                     Some(stored) => {
-                        if let Some(passed) = sweep::passed(&stored.report) {
-                            let at = stored.at;
-                            self.locals.insert(job.key, Local::Ran { passed, at });
-                        }
+                        self.set_local(job.key, &stored.report);
                         self.report = stored.report;
                     }
                     None => {
                         self.report = Report::Building;
                         self.before = self.entries();
-                        self.locals.insert(job.key.clone(), Local::Pending);
+                        self.locals.insert(job.key.clone(), Local::Running);
                         self.runner.first(job);
                     }
                 }
@@ -547,13 +551,10 @@ impl<'a> Watch<'a> {
             let hash = sweep::hash(&job.paths, &job.lang, &job.files).ok();
             match sweep::load(&self.results, &job.key) {
                 Some(stored) if Some(&stored.hash) == hash.as_ref() => {
-                    if let Some(passed) = sweep::passed(&stored.report) {
-                        let at = stored.at;
-                        self.locals.insert(job.key, Local::Ran { passed, at });
-                    }
+                    self.set_local(job.key, &stored.report);
                 }
                 _ => {
-                    self.locals.insert(job.key.clone(), Local::Pending);
+                    self.locals.insert(job.key.clone(), Local::Running);
                     jobs.push(job);
                 }
             }
@@ -561,15 +562,31 @@ impl<'a> Watch<'a> {
         self.runner.add(jobs);
     }
 
-    fn finish(&mut self, done: Done) {
-        match sweep::passed(&done.report) {
-            Some(passed) => {
-                let at = codeforces::now();
-                self.locals
-                    .insert(done.key.clone(), Local::Ran { passed, at })
+    fn set_local(&mut self, key: String, report: &Report) {
+        let local = match report {
+            Report::Ran(outcomes) => {
+                if outcomes
+                    .iter()
+                    .all(|(_, outcome)| matches!(outcome, Outcome::Pass { .. }))
+                {
+                    Local::Pass
+                } else {
+                    Local::Fail
+                }
             }
-            None => self.locals.remove(&done.key),
+            Report::BuildFailed(_) => Local::Fail,
+            Report::NoSamples => Local::NoSamples,
+            // These say nothing about the solution.
+            Report::Downloading | Report::NoSolution | Report::Building | Report::Failed(_) => {
+                self.locals.remove(&key);
+                return;
+            }
         };
+        self.locals.insert(key, local);
+    }
+
+    fn finish(&mut self, done: Done) {
+        self.set_local(done.key.clone(), &done.report);
         if self.source().is_some_and(|source| key(source) == done.key) {
             self.report = done.report;
             self.strays = self.strays(&self.before);
@@ -657,19 +674,9 @@ impl<'a> Watch<'a> {
         from % self.ids.len()
     }
 
-    // One column per problem with its attempts stacked upwards, oldest at the bottom, and the
-    // count of solved problems under it.
-    fn progress(&self, width: usize) -> (Vec<String>, String) {
-        let count = if self.listed {
-            format!("{}/{}", self.solved(), self.ids.len())
-        } else {
-            let tried = self
-                .ids
-                .iter()
-                .filter(|id| self.status(id) != Status::Todo)
-                .count();
-            format!("{}/{tried} tried", self.solved())
-        };
+    // One column per problem with its attempts stacked upwards, oldest at the bottom. Also
+    // returns the problems on screen, which the legend counts when there is no list.
+    fn progress(&self, width: usize) -> (Vec<String>, Vec<ProblemId>) {
         let per_band = (width / 2).clamp(1, COLUMNS_PER_BAND);
         let mut columns = Vec::new();
         for (at, id) in self.ids.iter().enumerate() {
@@ -677,10 +684,10 @@ impl<'a> Watch<'a> {
                 .sources
                 .get(id)
                 .is_some_and(|sources| sources.len() > 1);
-            columns.push((self.column(id), at == self.current, several));
+            columns.push((self.column(id), at == self.current, several, id));
         }
         // A list shows in fixed bands; the problemset is too long, so one band slides with you.
-        let bands: Vec<&[(Vec<String>, bool, bool)]> = if self.listed {
+        let bands: Vec<&[Column]> = if self.listed {
             let count = columns.len().div_ceil(per_band);
             let first = (self.current / per_band)
                 .saturating_sub(BANDS_SHOWN / 2)
@@ -698,11 +705,12 @@ impl<'a> Watch<'a> {
             vec![&columns[first..(first + per_band).min(columns.len())]]
         };
         let mut lines = Vec::new();
+        let mut shown = Vec::new();
         for chunk in bands {
             // Always the full height, so what comes below never moves.
             for row in (0..=ATTEMPTS_SHOWN).rev() {
                 let mut line = String::new();
-                for (cells, _, _) in chunk {
+                for (cells, _, _, _) in chunk {
                     match cells.get(row) {
                         Some(cell) => line.push_str(cell),
                         None => line.push(' '),
@@ -713,7 +721,8 @@ impl<'a> Watch<'a> {
             }
             // A cross on the baseline marks a problem with more than one solution to swap between.
             let mut base = String::new();
-            for (_, is_current, several) in chunk {
+            for (_, is_current, several, id) in chunk {
+                shown.push((*id).clone());
                 let mark = match (is_current, several) {
                     (true, true) => "╋".bold(),
                     (true, false) => "━".bold(),
@@ -724,44 +733,92 @@ impl<'a> Watch<'a> {
             }
             lines.push(base);
         }
-        let checking = self
-            .locals
-            .values()
-            .filter(|local| matches!(local, Local::Pending))
-            .count();
-        let count = if checking > 0 {
-            format!("{count}  {}", format!("· checking {checking}").dark_grey())
-        } else {
-            count
-        };
-        (lines, count)
+        (lines, shown)
     }
 
-    // Bottom-up cells: the last attempts, then the local result when it is newer than them.
+    // Each symbol with how many problems are in that state: the whole list, or the grid on
+    // screen when walking the problemset.
+    fn legend(&self, shown: &[ProblemId]) -> Vec<String> {
+        let ids = if self.listed { &self.ids[..] } else { shown };
+        let remote = |mark: Mark| {
+            ids.iter()
+                .filter(|id| self.remote(id) == Some(mark))
+                .count()
+        };
+        let local = |state: Local| {
+            ids.iter()
+                .filter(|id| self.local(id) == Some(state))
+                .count()
+        };
+        let untouched = ids
+            .iter()
+            .filter(|id| self.remote(id).is_none() && self.local(id).is_none())
+            .count();
+        let several = ids
+            .iter()
+            .filter(|id| {
+                self.sources
+                    .get(id)
+                    .is_some_and(|sources| sources.len() > 1)
+            })
+            .count();
+        let entry = |symbol: String, count: usize, label: &str| format!("{symbol} {count} {label}");
+        let remote = [
+            entry(ring(Mark::Accepted), remote(Mark::Accepted), "accepted"),
+            entry(ring(Mark::Rejected), remote(Mark::Rejected), "rejected"),
+            entry(
+                ring(Mark::CompilationError),
+                remote(Mark::CompilationError),
+                "compilation error",
+            ),
+            entry(ring(Mark::Testing), remote(Mark::Testing), "testing"),
+            format!("{} more than five", MORE.dark_grey()),
+        ];
+        let local = [
+            entry(local_dot(Local::Pass), local(Local::Pass), "pass"),
+            entry(local_dot(Local::Fail), local(Local::Fail), "fail"),
+            entry(local_dot(Local::Running), local(Local::Running), "running"),
+            entry(
+                local_dot(Local::NoSamples),
+                local(Local::NoSamples),
+                "no samples",
+            ),
+            entry(EMPTY.dark_grey().to_string(), untouched, "untouched"),
+            entry("┼".dim().to_string(), several, "several languages"),
+        ];
+        vec![
+            format!("{} {}", "remote".bold(), remote.join("   ")),
+            format!("{}  {}", "local".bold(), local.join("   ")),
+        ]
+    }
+
+    fn local(&self, id: &ProblemId) -> Option<Local> {
+        let source = self.source_of(id)?;
+        self.locals.get(&key(source)).copied()
+    }
+
+    // A problem's standing on Codeforces: accepted once is accepted, otherwise its last verdict.
+    fn remote(&self, id: &ProblemId) -> Option<Mark> {
+        let attempts = self.history.get(id)?;
+        if attempts
+            .iter()
+            .any(|attempt| matches!(attempt.mark, Mark::Accepted))
+        {
+            return Some(Mark::Accepted);
+        }
+        attempts.last().map(|attempt| attempt.mark)
+    }
+
+    // Bottom-up cells: the last attempts, then the local result on top.
     // Rings are submissions and the filled circle is the local result, all nerd font glyphs.
     fn column(&self, id: &ProblemId) -> Vec<String> {
         let mut cells = Vec::new();
         let attempts = self.history.get(id).map_or(&[][..], Vec::as_slice);
         for attempt in attempts {
-            let ring = match attempt.mark {
-                Mark::Accepted => RING.green(),
-                Mark::Rejected => RING.red(),
-                Mark::CompilationError => RING.dark_grey(),
-                Mark::Testing => RING.yellow(),
-            };
-            cells.push(ring.to_string());
+            cells.push(ring(attempt.mark));
         }
-        let last = attempts.last().map_or(i64::MIN, |attempt| attempt.at);
-        let local = self
-            .source_of(id)
-            .and_then(|source| self.locals.get(&key(source)));
-        match local {
-            Some(Local::Pending) => cells.push(DOT.dark_grey().to_string()),
-            Some(Local::Ran { passed, at }) if *at > last => {
-                let dot = if *passed { DOT.green() } else { DOT.red() };
-                cells.push(dot.to_string());
-            }
-            Some(Local::Ran { .. }) | None => {}
+        if let Some(local) = self.local(id) {
+            cells.push(local_dot(local));
         }
         if cells.is_empty() {
             cells.push(EMPTY.dark_grey().to_string());
@@ -772,17 +829,6 @@ impl<'a> Watch<'a> {
             cells.push(MORE.dark_grey().to_string());
         }
         cells
-    }
-
-    fn solved(&self) -> usize {
-        let mut count = 0;
-        for id in &self.ids {
-            match self.status(id) {
-                Status::Solved => count += 1,
-                Status::Tried | Status::Todo => {}
-            }
-        }
-        count
     }
 
     fn relevant(&self, path: &Path) -> bool {
@@ -1031,9 +1077,13 @@ impl<'a> Watch<'a> {
     }
 
     fn list(&self, cursor: usize, rows: usize, width: usize) -> (String, String) {
-        let (grid, count) = self.progress(width);
+        let (grid, shown) = self.progress(width);
         let mut footer = center_block(&grid, width).join("\n");
-        let _ = write!(footer, "\n{}", center(&count, width));
+        let _ = write!(
+            footer,
+            "\n{}",
+            center_block(&self.legend(&shown), width).join("\n")
+        );
         let _ = write!(
             footer,
             "\n{}",
@@ -1077,14 +1127,9 @@ impl<'a> Watch<'a> {
                 Status::Tried => "TRIED  ".red(),
                 Status::Todo => "PENDING".yellow(),
             };
-            let local = self
-                .source_of(id)
-                .and_then(|source| self.locals.get(&key(source)));
-            let local = match local {
-                Some(Local::Ran { passed: true, .. }) => "✓".green(),
-                Some(Local::Ran { passed: false, .. }) => "✗".red(),
-                Some(Local::Pending) => "·".dim(),
-                None => " ".stylize(),
+            let local = match self.local(id) {
+                Some(local) => local_dot(local),
+                None => " ".to_string(),
             };
             let row = format!(
                 "{current}{state}  {local}      {:<8} {name:<NAME_WIDTH$} {rating}",
@@ -1169,10 +1214,19 @@ impl<'a> Watch<'a> {
                 format!("{}", format!("{verdict} on test {test}").red().bold())
             }
         };
-        for line in [&self.note, &verdict] {
-            if !line.is_empty() {
-                messages.push(line.clone());
-            }
+        // The verdict takes the submit hint's line once a submission is on its way.
+        if !verdict.is_empty() {
+            messages.push(verdict);
+        } else if self.report.passed() {
+            let shown = self.shown();
+            let lang = self.lang(&shown.source);
+            messages.push(format!(
+                "Submit `{}`",
+                shown.expand(&lang.submit, Quote::Plain)
+            ));
+        }
+        if !self.note.is_empty() {
+            messages.push(self.note.clone());
         }
         if !self.strays.is_empty() {
             let stray = format!(
@@ -1188,14 +1242,7 @@ impl<'a> Watch<'a> {
             let files = format!("This problem reads {input} and writes {output}");
             messages.push(files.yellow().to_string());
         }
-        if self.report.passed() {
-            let shown = self.shown();
-            let lang = self.lang(&shown.source);
-            messages.push(format!(
-                "Submit `{}`, the verdict shows up here",
-                shown.expand(&lang.submit, Quote::Plain)
-            ));
-        }
+
         messages
     }
 
@@ -1220,13 +1267,12 @@ impl<'a> Watch<'a> {
         }
         lines.resize(REPORT_LINES, String::new());
 
-        let (grid, count) = self.progress(width);
+        let (grid, shown) = self.progress(width);
         lines.extend(center_block(&grid, width));
-        lines.push(center(&count, width));
         lines.push(String::new());
         lines.extend(messages);
         lines.push(String::new());
-        lines.push(center(&legend(), width));
+        lines.extend(center_block(&self.legend(&shown), width));
 
         let id = self.id();
         let url = id.url(Page::Problem);
@@ -1243,11 +1289,14 @@ impl<'a> Watch<'a> {
             let active = self.active.get(id).copied().unwrap_or(0);
             let mut icons = Vec::new();
             for (at, source) in sources.iter().enumerate() {
-                let icon = &self.lang(source).icon;
+                let lang = self.lang(source);
+                // Checked when the config loads.
+                let color = Color::try_from(lang.color.as_str()).unwrap_or(Color::Reset);
+                let icon = lang.icon.as_str().with(color);
                 let icon = if at == active {
-                    format!("[{icon}]").bold().to_string()
+                    format!("{}{icon}{}", "[".bold(), "]".bold())
                 } else {
-                    format!(" {icon} ").dim().to_string()
+                    format!(" {icon} ")
                 };
                 icons.push(icon);
             }
@@ -1275,19 +1324,27 @@ impl<'a> Watch<'a> {
             Some(_) => "copied ✓".green().to_string(),
             None => "copy".to_string(),
         };
-        let keys = prompt(&[
+        let actions = prompt(&[
             ("y", &copy),
             ("o", "submit"),
             ("w", "web"),
             ("e", "start"),
             ("s", "swap"),
-            ("n", &next),
-            ("p", "prev"),
             ("r", "rerun"),
             ("l", "list"),
             ("q", "quit"),
         ]);
-        lines.push(center(&keys, width));
+        let motions = prompt(&[
+            ("n", &next),
+            ("p", "prev"),
+            ("gg", "first"),
+            ("ge", "last"),
+            ("]f", "failed"),
+            ("]s", "solved"),
+            ("]t", "untouched"),
+        ]);
+        lines.push(center(&actions, width));
+        lines.push(center(&motions, width));
         (lines.join("\n"), String::new())
     }
 }
@@ -1298,7 +1355,6 @@ fn prompt(keys: &[(&str, &str)]) -> String {
         let _ = write!(out, "{} {label}  ", key.bold());
     }
     out.truncate(out.len() - "  ".len());
-    out.push_str(" ? ");
     out
 }
 
@@ -1339,16 +1395,24 @@ fn diff(expected: &str, got: &str) -> Vec<String> {
     out
 }
 
-fn legend() -> String {
-    format!(
-        "{} accepted  {} rejected  {} compilation error  {} testing  {} samples here  {} untouched",
-        RING.green(),
-        RING.red(),
-        RING.dark_grey(),
-        RING.yellow(),
-        DOT.green(),
-        EMPTY.dark_grey()
-    )
+fn ring(mark: Mark) -> String {
+    let ring = match mark {
+        Mark::Accepted => RING.green(),
+        Mark::Rejected => RING.red(),
+        Mark::CompilationError => RING.dark_grey(),
+        Mark::Testing => RING.yellow(),
+    };
+    ring.to_string()
+}
+
+fn local_dot(local: Local) -> String {
+    let dot = match local {
+        Local::Pass => DOT.green(),
+        Local::Fail => DOT.red(),
+        Local::Running => DOT.dark_grey(),
+        Local::NoSamples => DOT.dim(),
+    };
+    dot.to_string()
 }
 
 fn center(line: &str, width: usize) -> String {

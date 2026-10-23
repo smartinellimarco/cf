@@ -8,9 +8,8 @@ use std::thread::JoinHandle;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::codeforces;
 use crate::config::{Lang, Paths};
-use crate::run::{self, Outcome, Report};
+use crate::run::{self, Report};
 use crate::statement::Files;
 
 // `key` names the source file, like 4A.cpp, so two implementations of a problem never collide.
@@ -30,7 +29,6 @@ pub struct Done {
 #[derive(Serialize, Deserialize)]
 pub struct Stored {
     pub hash: String,
-    pub at: i64,
     pub report: Report,
 }
 
@@ -147,10 +145,9 @@ fn work(shared: &Shared, results: &Path, done: &Sender<Done>) {
         if cancel.load(Ordering::Relaxed) {
             continue;
         }
-        let at = codeforces::now();
         let stored = match hash {
             // A failure of cf itself says nothing about the solution, so it isn't kept.
-            Ok(hash) if !matches!(report, Report::Failed(_)) => Stored { hash, at, report },
+            Ok(hash) if !matches!(report, Report::Failed(_)) => Stored { hash, report },
             _ => {
                 let _ = done.send(Done {
                     key: job.key,
@@ -164,23 +161,6 @@ fn work(shared: &Shared, results: &Path, done: &Sender<Done>) {
             key: job.key,
             report: stored.report,
         });
-    }
-}
-
-// None when the samples say nothing: no samples to run, or cf itself failed.
-pub fn passed(report: &Report) -> Option<bool> {
-    match report {
-        Report::Ran(outcomes) => Some(
-            outcomes
-                .iter()
-                .all(|(_, outcome)| matches!(outcome, Outcome::Pass { .. })),
-        ),
-        Report::BuildFailed(_) => Some(false),
-        Report::Downloading
-        | Report::NoSolution
-        | Report::Building
-        | Report::Failed(_)
-        | Report::NoSamples => None,
     }
 }
 
