@@ -17,6 +17,7 @@ const BUILD_TIMEOUT: Duration = Duration::from_secs(120);
 const RUN_TIMEOUT: Duration = Duration::from_secs(5);
 // A runaway print loop stops being read here and then hits the timeout.
 const OUTPUT_LIMIT: u64 = 16 << 20;
+const REAL_ERROR: f64 = 1e-6;
 
 #[derive(Serialize, Deserialize)]
 pub enum Outcome {
@@ -173,7 +174,30 @@ pub fn samples(dir: &Path) -> Result<Vec<u32>> {
 
 // Codeforces' default checker compares whitespace-separated tokens.
 fn same_tokens(got: &str, expected: &str) -> bool {
-    got.split_whitespace().eq(expected.split_whitespace())
+    let mut got = got.split_whitespace();
+    let mut expected = expected.split_whitespace();
+    loop {
+        match (got.next(), expected.next()) {
+            (None, None) => return true,
+            (Some(got), Some(expected)) if same_token(got, expected) => {}
+            _ => return false,
+        }
+    }
+}
+
+// Real answers pass within 1e-6 absolute or relative error, like Codeforces' rcmp6 checker.
+// Only an expected token with a decimal point is read as a real; integers must match exactly.
+fn same_token(got: &str, expected: &str) -> bool {
+    if got == expected {
+        return true;
+    }
+    if !expected.contains('.') {
+        return false;
+    }
+    let (Ok(got), Ok(expected)) = (got.parse::<f64>(), expected.parse::<f64>()) else {
+        return false;
+    };
+    (got - expected).abs() <= REAL_ERROR * expected.abs().max(1.0)
 }
 
 fn sh(
@@ -246,5 +270,14 @@ mod tests {
     fn compares_tokens_like_the_default_checker() {
         assert!(same_tokens("1 2\n3\n", "1 2 3"));
         assert!(!same_tokens("1 2", "1 2 3"));
+    }
+
+    #[test]
+    fn compares_reals_within_the_checker_error() {
+        assert!(same_tokens("0.5000001", "0.500000"));
+        assert!(same_tokens("1000000.5", "1000000.000000"));
+        assert!(!same_tokens("0.501", "0.500000"));
+        assert!(!same_tokens("3", "2"));
+        assert!(!same_tokens("2.0", "2"));
     }
 }
