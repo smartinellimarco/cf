@@ -26,7 +26,7 @@ pub struct Usage {
     pub memory: u64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub enum Outcome {
     Pass {
         usage: Usage,
@@ -60,11 +60,9 @@ impl Outcome {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+// What running a solution's samples said. Failed is cf's own error, not the solution's.
+#[derive(Serialize, Deserialize, Clone)]
 pub enum Report {
-    Downloading,
-    NoSolution,
-    Building,
     Failed(String),
     BuildFailed(String),
     NoSamples,
@@ -88,12 +86,7 @@ impl Report {
                 }
                 true
             }
-            Report::Downloading
-            | Report::NoSolution
-            | Report::Building
-            | Report::Failed(_)
-            | Report::BuildFailed(_)
-            | Report::NoSamples => false,
+            Report::Failed(_) | Report::BuildFailed(_) | Report::NoSamples => false,
         }
     }
 }

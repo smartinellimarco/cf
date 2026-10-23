@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -12,34 +12,36 @@ use crate::config::{Lang, Paths};
 use crate::run::{self, Report};
 use crate::statement::Rules;
 
-// `key` names the source file, like 4A.cpp, so two implementations of a problem never collide.
+// One run of a solution's samples. `hash` names the result and `key`, the file name like 4A.cpp,
+// names the build folder, which two runs must never share at once.
 pub struct Job {
+    pub hash: String,
     pub key: String,
     pub paths: Paths,
     pub rules: Rules,
     pub lang: Lang,
 }
 
-pub struct Done {
-    pub key: String,
+// A run's report, plus anything the build left next to the source instead of its build folder.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Stored {
     pub report: Report,
+    pub strays: Vec<String>,
 }
 
-// The last report of a solution and the inputs it ran on, so an unchanged one needn't run again.
-#[derive(Serialize, Deserialize)]
-pub struct Stored {
+pub struct Done {
     pub hash: String,
-    pub report: Report,
+    pub stored: Stored,
 }
 
 #[derive(Default)]
 struct Queue {
     jobs: VecDeque<Job>,
-    running: HashMap<String, Arc<AtomicBool>>,
+    running: HashSet<String>,
     stopped: bool,
 }
 
-type Shared = Arc<(Mutex<Queue>, Condvar)>;
+type Shared = Arc<(Mutex<Queue>, Condvar, AtomicBool)>;
 
 pub struct Runner {
     shared: Shared,
@@ -71,22 +73,15 @@ impl Runner {
         }
     }
 
-    pub fn add(&self, jobs: Vec<Job>) {
-        let (queue, wake) = &*self.shared;
+    // The problem on screen goes first.
+    pub fn add(&self, job: Job, first: bool) {
+        let (queue, wake, _) = &*self.shared;
         let mut queue = queue.lock().unwrap();
-        queue.jobs.extend(jobs);
-        wake.notify_all();
-    }
-
-    // The problem on screen jumps the queue, and a stale run of it is killed.
-    pub fn first(&self, job: Job) {
-        let (queue, wake) = &*self.shared;
-        let mut queue = queue.lock().unwrap();
-        if let Some(cancel) = queue.running.get(&job.key) {
-            cancel.store(true, Ordering::Relaxed);
+        if first {
+            queue.jobs.push_front(job);
+        } else {
+            queue.jobs.push_back(job);
         }
-        queue.jobs.retain(|queued| queued.key != job.key);
-        queue.jobs.push_front(job);
         wake.notify_all();
     }
 }
@@ -94,15 +89,10 @@ impl Runner {
 // Samples run in their own process groups, which outlive cf unless they are killed here.
 impl Drop for Runner {
     fn drop(&mut self) {
-        {
-            let (queue, wake) = &*self.shared;
-            let mut queue = queue.lock().unwrap();
-            queue.stopped = true;
-            for cancel in queue.running.values() {
-                cancel.store(true, Ordering::Relaxed);
-            }
-            wake.notify_all();
-        }
+        let (queue, wake, stop) = &*self.shared;
+        stop.store(true, Ordering::Relaxed);
+        queue.lock().unwrap().stopped = true;
+        wake.notify_all();
         for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
@@ -110,9 +100,9 @@ impl Drop for Runner {
 }
 
 fn work(shared: &Shared, results: &Path, done: &Sender<Done>) {
-    let (queue, wake) = &**shared;
+    let (queue, wake, stop) = &**shared;
     loop {
-        let (job, cancel) = {
+        let job = {
             let mut queue = queue.lock().unwrap();
             loop {
                 if queue.stopped {
@@ -121,50 +111,57 @@ fn work(shared: &Shared, results: &Path, done: &Sender<Done>) {
                 let free = queue
                     .jobs
                     .iter()
-                    .position(|job| !queue.running.contains_key(&job.key));
+                    .position(|job| !queue.running.contains(&job.key));
                 if let Some(at) = free {
                     let job = queue.jobs.remove(at).unwrap();
-                    let cancel = Arc::new(AtomicBool::new(false));
-                    queue.running.insert(job.key.clone(), cancel.clone());
-                    break (job, cancel);
+                    queue.running.insert(job.key.clone());
+                    break job;
                 }
                 queue = wake.wait(queue).unwrap();
             }
         };
 
-        let hash = hash(&job.paths, &job.lang, &job.rules);
-        let report = match run::check(&job.paths, &job.lang, &job.rules, &cancel) {
+        let folder = job.paths.source.parent().map(Path::to_path_buf);
+        let before = entries(folder.as_deref());
+        let report = match run::check(&job.paths, &job.lang, &job.rules, stop) {
             Ok(report) => report,
             Err(error) => Report::Failed(format!("{error:#}")),
         };
+        let strays = entries(folder.as_deref())
+            .into_iter()
+            .filter(|name| !before.contains(name) && *name != job.key)
+            .collect();
+        let stored = Stored { report, strays };
         {
             let mut queue = queue.lock().unwrap();
             queue.running.remove(&job.key);
             wake.notify_all();
         }
-        if cancel.load(Ordering::Relaxed) {
-            continue;
+        if stop.load(Ordering::Relaxed) {
+            return;
         }
-        let stored = match hash {
-            // A failure of cf itself says nothing about the solution, so it isn't kept.
-            Ok(hash) if !matches!(report, Report::Failed(_)) => Stored { hash, report },
-            _ => {
-                let _ = done.send(Done {
-                    key: job.key,
-                    report,
-                });
-                continue;
-            }
-        };
-        let _ = save(results, &job.key, &stored);
-        let _ = done.send(Done {
-            key: job.key,
-            report: stored.report,
-        });
+        // A failure of cf itself says nothing about the solution, so only memory keeps it.
+        if !matches!(stored.report, Report::Failed(_)) {
+            let _ = save(results, &job.hash, &stored);
+        }
+        let hash = job.hash;
+        if done.send(Done { hash, stored }).is_err() {
+            return;
+        }
     }
 }
 
-// Covers everything a run depends on, so an unchanged hash means the old result still holds.
+fn entries(folder: Option<&Path>) -> Vec<String> {
+    let Some(Ok(entries)) = folder.map(std::fs::read_dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect()
+}
+
+// Covers everything a run depends on, so equal hashes mean equal results.
 pub fn hash(paths: &Paths, lang: &Lang, rules: &Rules) -> Result<String> {
     let mut hasher = blake3::Hasher::new();
     let mut part = |bytes: &[u8]| {
@@ -184,16 +181,34 @@ pub fn hash(paths: &Paths, lang: &Lang, rules: &Rules) -> Result<String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-pub fn load(results: &Path, key: &str) -> Option<Stored> {
-    let json = std::fs::read_to_string(results.join(format!("{key}.json"))).ok()?;
+pub fn load(results: &Path, hash: &str) -> Option<Stored> {
+    let json = std::fs::read_to_string(results.join(format!("{hash}.json"))).ok()?;
     serde_json::from_str(&json).ok()
 }
 
-fn save(results: &Path, key: &str, result: &Stored) -> Result<()> {
+pub fn forget(results: &Path, hash: &str) {
+    let _ = std::fs::remove_file(results.join(format!("{hash}.json")));
+}
+
+// Results of contents no solution has anymore would pile up with every save.
+pub fn prune(results: &Path, keep: &HashSet<&String>) {
+    let Ok(entries) = std::fs::read_dir(results) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let hash = name.trim_end_matches(".json").to_string();
+        if !keep.contains(&hash) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+fn save(results: &Path, hash: &str, stored: &Stored) -> Result<()> {
     std::fs::create_dir_all(results)?;
     std::fs::write(
-        results.join(format!("{key}.json")),
-        serde_json::to_string(result)?,
+        results.join(format!("{hash}.json")),
+        serde_json::to_string(stored)?,
     )?;
     Ok(())
 }
