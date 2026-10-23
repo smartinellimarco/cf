@@ -905,7 +905,11 @@ impl<'a> Watch<'a> {
             View::List { cursor } => self.list(cursor, usize::from(rows), width),
             View::Problem => self.problem(width),
         };
-        let footer: Vec<&str> = footer.lines().collect();
+        let mut wrapped_footer = Vec::new();
+        for line in footer.lines() {
+            wrapped_footer.extend(wrap(line, width));
+        }
+        let footer = wrapped_footer;
         let room = usize::from(rows).saturating_sub(footer.len());
         let mut stdout = std::io::stdout();
         queue!(
@@ -1111,17 +1115,17 @@ impl<'a> Watch<'a> {
         }
         if let Some(sources) = self.sources.get(id) {
             let active = self.active.get(id).copied().unwrap_or(0);
-            let mut names = Vec::new();
+            let mut icons = Vec::new();
             for (at, source) in sources.iter().enumerate() {
-                let name = format!("{} {}", self.lang(source).icon, key(source));
-                let name = if at == active {
-                    name.bold().to_string()
+                let icon = &self.lang(source).icon;
+                let icon = if at == active {
+                    format!("[{icon}]").bold().to_string()
                 } else {
-                    name.dim().to_string()
+                    format!(" {icon} ").dim().to_string()
                 };
-                names.push(name);
+                icons.push(icon);
             }
-            let _ = write!(title, "   {}", names.join(" · "));
+            let _ = write!(title, "   {}", icons.concat());
         }
         let editor = match self.shown() {
             Some(shown) => shown.expand(&self.config.editor, Quote::Shell),
@@ -1141,7 +1145,7 @@ impl<'a> Watch<'a> {
             None => "copy".to_string(),
         };
         let footer = format!(
-            "\n{}\nCurrent problem: \x1b]8;;{url}\x1b\\{title}\x1b]8;;\x1b\\\n\n    {editor}\n\n{}",
+            "{}\nCurrent problem: \x1b]8;;{url}\x1b\\{title}\x1b]8;;\x1b\\\n\n    {editor}\n\n{}",
             self.progress(width),
             prompt(&[
                 ("y", &copy),
@@ -1157,9 +1161,8 @@ impl<'a> Watch<'a> {
                 ("q", "quit"),
             ])
         );
-        // Like rustlings, the watch view flows top to bottom and only the list pins its footer.
-        body.push_str(&footer);
-        (body, String::new())
+        // The footer stays put at the bottom, so a report changing size doesn't move it.
+        (body, footer)
     }
 }
 
