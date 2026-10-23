@@ -34,18 +34,9 @@ const DOT: &str = "\u{f0765}";
 const MORE: &str = "\u{f01d9}";
 // nf-md-circle_small, for a problem with nothing to show yet.
 const EMPTY: &str = "\u{f09df}";
-// nf-md-circle_slice_1 to 8.
-const SPINNER: [&str; 8] = [
-    "\u{f0a9e}",
-    "\u{f0a9f}",
-    "\u{f0aa0}",
-    "\u{f0aa1}",
-    "\u{f0aa2}",
-    "\u{f0aa3}",
-    "\u{f0aa4}",
-    "\u{f0aa5}",
-];
-const SPIN: Duration = Duration::from_millis(120);
+// cli-spinners' dotsCircle, two columns wide like a grid cell with its gap.
+const SPINNER: [&str; 8] = ["⢎ ", "⠎⠁", "⠊⠑", "⠈⠱", " ⡱", "⢀⡰", "⢄⡠", "⢆⡀"];
+const SPIN: Duration = Duration::from_millis(80);
 const FLASH: Duration = Duration::from_secs(1);
 const COLUMN_MAX: usize = 40;
 
@@ -705,11 +696,10 @@ impl<'a> Watch<'a> {
             for row in (0..=ATTEMPTS_SHOWN + 1).rev() {
                 let mut line = String::new();
                 for (cells, _) in chunk {
-                    match cells.get(row) {
-                        Some(cell) => line.push_str(cell),
-                        None => line.push(' '),
-                    }
-                    line.push(' ');
+                    // Every cell takes two columns: a glyph and its gap, or a spinner frame.
+                    let cell = cells.get(row).map_or("", String::as_str);
+                    line.push_str(cell);
+                    line.push_str(&" ".repeat(2usize.saturating_sub(visible(cell))));
                 }
                 lines.push(line);
             }
