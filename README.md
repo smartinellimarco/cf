@@ -103,7 +103,7 @@ Edit `templates/main.cpp` to start every solution with your own boilerplate: inc
 ```
 
 - `ext` is the extension of the solution files and names the template they start from. Two languages can't share one.
-- `icon` is a [Nerd Fonts](https://www.nerdfonts.com/cheat-sheet) glyph shown in the title, and `color` one of the terminal's colors for it: black, red, green, yellow, blue, magenta, cyan, white, grey, or their `dark_` versions.
+- `icon` is a [Nerd Fonts](https://www.nerdfonts.com/cheat-sheet) glyph shown in the local popup, and `color` one of the terminal's colors for it: black, red, green, yellow, blue, magenta, cyan, white, grey, or their `dark_` versions.
 - `comment` prefixes the statement copied on top of the solution.
 - `build` and `run` are `sh` commands that run inside the solution's build folder in the cache, so whatever they write stays out of the solutions folder. `run` gets each sample on stdin.
 - `submit` is the file `y` copies. It can be the source or something the build made.
