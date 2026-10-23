@@ -17,7 +17,7 @@ pub enum Kind {
 }
 
 // Old problems read input.txt and write output.txt instead of using stdin and stdout.
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 pub struct Files {
     pub input: Option<String>,
     pub output: Option<String>,
