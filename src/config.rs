@@ -58,14 +58,21 @@ impl Dirs {
         self.config.join("templates")
     }
 
-    // Builds of different solution folders must not collide, so each folder gets its own subfolder.
     pub fn builds(&self, folder: &Path) -> PathBuf {
-        let name = folder
-            .display()
-            .to_string()
-            .replace(std::path::MAIN_SEPARATOR, "%");
-        self.cache.join("build").join(name)
+        self.cache.join("build").join(flat(folder))
     }
+
+    pub fn results(&self, folder: &Path) -> PathBuf {
+        self.cache.join("results").join(flat(folder))
+    }
+}
+
+// Different solution folders must not collide in the cache, so each gets its own subfolder.
+fn flat(folder: &Path) -> String {
+    folder
+        .display()
+        .to_string()
+        .replace(std::path::MAIN_SEPARATOR, "%")
 }
 
 impl Config {

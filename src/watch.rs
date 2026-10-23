@@ -14,8 +14,9 @@ use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
 
 use crate::codeforces::{self, Client, Handle, Page, Problem, ProblemId, Submission};
 use crate::config::{Config, Dirs, Lang, Paths, Quote};
-use crate::run::{self, Outcome, Report};
+use crate::run::{Outcome, Report};
 use crate::statement::{self, Files, Kind, Statement};
+use crate::sweep::{self, Done, Job, Runner};
 
 const TICK: Duration = Duration::from_millis(100);
 const POLL_EVERY: Duration = Duration::from_secs(5);
@@ -35,6 +36,12 @@ enum Status {
     Tried,
     Todo,
     Gym,
+}
+
+enum Local {
+    Pending,
+    Pass,
+    Fail,
 }
 
 enum View {
@@ -108,7 +115,11 @@ pub struct Watch<'a> {
     templates: PathBuf,
     builds: PathBuf,
     strays: Vec<String>,
+    before: Vec<String>,
     files: Files,
+    runner: Runner,
+    locals: HashMap<ProblemId, Local>,
+    results: PathBuf,
 }
 
 impl<'a> Watch<'a> {
@@ -135,6 +146,8 @@ impl<'a> Watch<'a> {
         .context("starting the file watcher")?;
         let lang = config.lang().clone();
         let root = std::env::current_dir()?;
+        let results = dirs.results(&root);
+        let runner = Runner::new(&lang, results.clone());
         let mut watch = Watch {
             client,
             config,
@@ -159,7 +172,11 @@ impl<'a> Watch<'a> {
             builds: dirs.builds(&root),
             root,
             strays: Vec::new(),
+            before: Vec::new(),
             files: Files::default(),
+            runner,
+            locals: HashMap::new(),
+            results,
         };
         watch.current = match start.and_then(|id| watch.ids.iter().position(|at| *at == id)) {
             Some(at) => at,
@@ -171,6 +188,7 @@ impl<'a> Watch<'a> {
     pub fn run(&mut self) -> Result<ProblemId> {
         let _screen = Screen::enter()?;
         self.open();
+        self.sweep();
         let mut dirty = true;
         loop {
             if dirty {
@@ -213,13 +231,19 @@ impl<'a> Watch<'a> {
             if self.stale {
                 self.stale = false;
                 self.report = Report::Building;
-                self.render()?;
-                let before = self.entries();
-                self.report = match run::check(&self.paths(), &self.lang, &self.files) {
-                    Ok(report) => report,
-                    Err(error) => Report::Failed(format!("{error:#}")),
-                };
-                self.strays = self.strays(&before);
+                self.before = self.entries();
+                self.locals.insert(self.id().clone(), Local::Pending);
+                self.runner.first(Job {
+                    id: self.id().clone(),
+                    paths: self.paths(),
+                    files: self.files.clone(),
+                });
+                dirty = true;
+            }
+
+            let done: Vec<Done> = self.runner.done.try_iter().collect();
+            for done in done {
+                self.finish(done);
                 dirty = true;
             }
 
@@ -297,11 +321,73 @@ impl<'a> Watch<'a> {
     }
 
     fn paths(&self) -> Paths {
-        let dir = self.root.join(self.dir());
+        self.paths_of(self.id())
+    }
+
+    fn paths_of(&self, id: &ProblemId) -> Paths {
+        let dir = self.root.join("problems").join(id.to_string());
         Paths {
             source: dir.join(self.source()),
-            build: self.builds.join(self.id().to_string()),
+            build: self.builds.join(id.to_string()),
             dir,
+        }
+    }
+
+    // Runs the samples of every other problem with code here, so the list shows how each stands.
+    fn sweep(&mut self) {
+        let Ok(entries) = std::fs::read_dir(self.root.join("problems")) else {
+            return;
+        };
+        let mut ids = Vec::new();
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(Ok(id)) = name.to_str().map(str::parse::<ProblemId>) else {
+                continue;
+            };
+            if id != *self.id() && self.paths_of(&id).source.is_file() {
+                ids.push(id);
+            }
+        }
+        // Nearest to the current problem first, problems outside the list last.
+        ids.sort_by_key(|id| match self.ids.iter().position(|at| at == id) {
+            Some(at) => at.abs_diff(self.current),
+            None => usize::MAX,
+        });
+        let mut jobs = Vec::new();
+        for id in ids {
+            let paths = self.paths_of(&id);
+            let files: Files = self
+                .client
+                .load(&format!("statements/{id}.json"))
+                .unwrap_or_default();
+            let hash = sweep::hash(&paths, &self.lang, &files).ok();
+            match sweep::load(&self.results, &id) {
+                Some(stored) if Some(&stored.hash) == hash.as_ref() => {
+                    let local = if stored.passed {
+                        Local::Pass
+                    } else {
+                        Local::Fail
+                    };
+                    self.locals.insert(id, local);
+                }
+                _ => {
+                    self.locals.insert(id.clone(), Local::Pending);
+                    jobs.push(Job { id, paths, files });
+                }
+            }
+        }
+        self.runner.add(jobs);
+    }
+
+    fn finish(&mut self, done: Done) {
+        match sweep::passed(&done.report) {
+            Some(true) => self.locals.insert(done.id.clone(), Local::Pass),
+            Some(false) => self.locals.insert(done.id.clone(), Local::Fail),
+            None => self.locals.remove(&done.id),
+        };
+        if done.id == *self.id() {
+            self.report = done.report;
+            self.strays = self.strays(&self.before);
         }
     }
 
@@ -631,7 +717,7 @@ impl<'a> Watch<'a> {
             .saturating_sub(visible / 2)
             .min(self.ids.len().saturating_sub(visible));
         let mut body = format!(
-            "  Current  State    {:<8} {:<NAME_WIDTH$} Rating\n",
+            "  Current  State    Local  {:<8} {:<NAME_WIDTH$} Rating\n",
             "Id", "Name"
         );
         for at in top..(top + visible).min(self.ids.len()) {
@@ -655,8 +741,14 @@ impl<'a> Watch<'a> {
                 Status::Todo => "PENDING".yellow(),
                 Status::Gym => "GYM    ".dim(),
             };
+            let local = match self.locals.get(id) {
+                Some(Local::Pass) => "✓".green(),
+                Some(Local::Fail) => "✗".red(),
+                Some(Local::Pending) => "·".dim(),
+                None => " ".stylize(),
+            };
             let row = format!(
-                "{current}{state}  {:<8} {name:<NAME_WIDTH$} {rating}",
+                "{current}{state}  {local}      {:<8} {name:<NAME_WIDTH$} {rating}",
                 id.to_string()
             );
             if at == cursor {

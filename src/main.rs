@@ -3,6 +3,7 @@ mod config;
 mod list;
 mod run;
 mod statement;
+mod sweep;
 mod watch;
 
 use std::process::ExitCode;

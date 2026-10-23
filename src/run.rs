@@ -3,6 +3,7 @@ use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -68,13 +69,14 @@ struct Finished {
     stderr: String,
 }
 
-pub fn check(paths: &Paths, lang: &Lang, files: &Files) -> Result<Report> {
+// Setting `cancel` kills whatever is running and makes the rest return at once.
+pub fn check(paths: &Paths, lang: &Lang, files: &Files, cancel: &AtomicBool) -> Result<Report> {
     let dir = paths.dir.as_path();
     // Commands run inside build/ so whatever a compiler drops in its working directory stays ignored.
     let cwd = paths.build.as_path();
     std::fs::create_dir_all(cwd)?;
     let build = paths.expand(&lang.build, Quote::Shell);
-    let Some(build) = sh(cwd, &build, Stdio::null(), BUILD_TIMEOUT)? else {
+    let Some(build) = sh(cwd, &build, Stdio::null(), BUILD_TIMEOUT, cancel)? else {
         return Ok(Report::BuildFailed("build timed out".to_string()));
     };
     if !build.success {
@@ -103,7 +105,7 @@ pub fn check(paths: &Paths, lang: &Lang, files: &Files) -> Result<Report> {
         if let Some(name) = &files.output {
             let _ = std::fs::remove_file(cwd.join(name));
         }
-        let outcome = match sh(cwd, &run, stdin, RUN_TIMEOUT)? {
+        let outcome = match sh(cwd, &run, stdin, RUN_TIMEOUT, cancel)? {
             None => Outcome::Timeout,
             Some(Finished {
                 success: false,
@@ -137,7 +139,7 @@ pub fn check(paths: &Paths, lang: &Lang, files: &Files) -> Result<Report> {
     Ok(Report::Ran(outcomes))
 }
 
-fn samples(dir: &Path) -> Result<Vec<u32>> {
+pub fn samples(dir: &Path) -> Result<Vec<u32>> {
     let mut found = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let name = entry?.file_name();
@@ -166,7 +168,13 @@ fn same_tokens(got: &str, expected: &str) -> bool {
     got.split_whitespace().eq(expected.split_whitespace())
 }
 
-fn sh(dir: &Path, command: &str, stdin: Stdio, timeout: Duration) -> Result<Option<Finished>> {
+fn sh(
+    dir: &Path,
+    command: &str,
+    stdin: Stdio,
+    timeout: Duration,
+    cancel: &AtomicBool,
+) -> Result<Option<Finished>> {
     let start = Instant::now();
     let mut child = Command::new("sh")
         .arg("-c")
@@ -180,7 +188,7 @@ fn sh(dir: &Path, command: &str, stdin: Stdio, timeout: Duration) -> Result<Opti
         .context("running sh")?;
     let stdout = drain(child.stdout.take());
     let stderr = drain(child.stderr.take());
-    let Some(status) = wait(&mut child, timeout)? else {
+    let Some(status) = wait(&mut child, timeout, cancel)? else {
         // sh -c forks the real program, so kill the whole group or it keeps running.
         Command::new("kill")
             .args(["-KILL", "--", &format!("-{}", child.id())])
@@ -207,9 +215,13 @@ fn drain(pipe: Option<impl Read + Send + 'static>) -> JoinHandle<String> {
     })
 }
 
-fn wait(child: &mut Child, timeout: Duration) -> Result<Option<std::process::ExitStatus>> {
+fn wait(
+    child: &mut Child,
+    timeout: Duration,
+    cancel: &AtomicBool,
+) -> Result<Option<std::process::ExitStatus>> {
     let start = Instant::now();
-    while start.elapsed() < timeout {
+    while start.elapsed() < timeout && !cancel.load(Ordering::Relaxed) {
         if let Some(status) = child.try_wait()? {
             return Ok(Some(status));
         }
