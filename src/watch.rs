@@ -34,9 +34,9 @@ const DOT: &str = "\u{f0765}";
 const MORE: &str = "\u{f01d9}";
 // nf-md-circle_small, for a problem with nothing to show yet.
 const EMPTY: &str = "\u{f09df}";
-// cli-spinners' dots2, a ring of dots one cell wide like the other glyphs.
-const SPINNER: [&str; 8] = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
-const SPIN: Duration = Duration::from_millis(80);
+// Four braille dots in the middle of the cell, the missing one going round clockwise.
+const SPINNER: [&str; 4] = ["⠴", "⠦", "⠖", "⠲"];
+const SPIN: Duration = Duration::from_millis(120);
 // Goes after a glyph instead of a space: ghostty draws a nerd font glyph two cells wide when the
 // next cell is a plain space, and one cell wide otherwise, like between the cursor's brackets.
 const GAP: &str = "\u{a0}";
