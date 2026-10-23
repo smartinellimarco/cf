@@ -1253,7 +1253,8 @@ impl<'a> Watch<'a> {
             Shown::FetchFailed(error) => {
                 return head(format!("{error}, press r to retry").red().to_string());
             }
-            Shown::NoSolution => return head("No solution yet, e to start one".to_string()),
+            // The line under the title already says how to start one.
+            Shown::NoSolution => return (Vec::new(), Vec::new()),
             Shown::Building => return head("Building…".to_string()),
             Shown::Done(stored) => &stored.report,
         };
@@ -1372,12 +1373,25 @@ impl<'a> Watch<'a> {
         let title = format!("\x1b]8;;{url}\x1b\\{}\x1b]8;;\x1b\\", title.bold());
         lines.push(center(&title, width));
         lines.push(String::new());
-        // A background like inline code in markdown, from the terminal's own palette.
-        let editor = self.shown().expand(&self.config.editor, Quote::Shell);
-        lines.push(center(
-            &format!(" {editor} ").on_dark_grey().to_string(),
-            width,
-        ));
+        // The command to open the solution, with a background like inline code in markdown from
+        // the terminal's own palette. Without a solution it would open an empty file, so the line
+        // says how to start one instead.
+        let shown = self.shown();
+        let line = match self.source() {
+            Some(_) => {
+                let editor = shown.expand(&self.config.editor, Quote::Shell);
+                format!(" {editor} ").on_dark_grey().to_string()
+            }
+            None => {
+                let file = shown.source.display();
+                let start = self.key(Command::Start).unwrap_or_default();
+                format!(
+                    "{} starts {file} with the statement on top",
+                    start.as_str().bold()
+                )
+            }
+        };
+        lines.push(center(&line, width));
         lines.push(String::new());
 
         let next = match self.verdict {
