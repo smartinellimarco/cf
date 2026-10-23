@@ -71,7 +71,7 @@ struct Finished {
 
 // Setting `cancel` kills whatever is running and makes the rest return at once.
 pub fn check(paths: &Paths, lang: &Lang, files: &Files, cancel: &AtomicBool) -> Result<Report> {
-    let dir = paths.dir.as_path();
+    let dir = paths.samples.as_path();
     // Commands run inside build/ so whatever a compiler drops in its working directory stays ignored.
     let cwd = paths.build.as_path();
     std::fs::create_dir_all(cwd)?;

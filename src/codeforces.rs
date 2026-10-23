@@ -1,15 +1,12 @@
-use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
-use serde::de::{self, DeserializeOwned};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use ureq::Agent;
-
-use crate::list::List;
 
 // The API allows one call every two seconds.
 const API_INTERVAL: Duration = Duration::from_secs(2);
@@ -65,20 +62,6 @@ impl FromStr for ProblemId {
     }
 }
 
-impl Serialize for ProblemId {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(self)
-    }
-}
-
-impl<'de> Deserialize<'de> for ProblemId {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<ProblemId, D::Error> {
-        let text = String::deserialize(deserializer)?;
-        text.parse()
-            .map_err(|()| de::Error::custom(format!("{text:?} is not a problem id")))
-    }
-}
-
 // Gym contests are numbered from 100000 and live under /gym/, usually with PDF statements.
 const FIRST_GYM_CONTEST: u32 = 100_000;
 
@@ -125,7 +108,6 @@ impl Problem {
 #[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Submission {
-    pub id: u64,
     pub creation_time_seconds: i64,
     pub problem: Problem,
     pub verdict: Option<String>,
@@ -143,18 +125,6 @@ struct Response<T> {
 #[derive(Deserialize)]
 struct Problemset {
     problems: Vec<Problem>,
-}
-
-#[derive(Serialize, Deserialize, Default)]
-pub struct State {
-    pub last: HashMap<PathBuf, Last>,
-}
-
-// What a solutions folder had open when cf quit, so `cf` alone reopens it.
-#[derive(Serialize, Deserialize)]
-pub struct Last {
-    pub list: Option<List>,
-    pub problem: ProblemId,
 }
 
 pub enum Refresh {
@@ -299,14 +269,6 @@ impl Client {
         let url = format!("https://codeforces.com/api/user.status?handle={handle}&count=5");
         let (submissions, _) = self.api(&url)?;
         Ok(submissions)
-    }
-
-    pub fn state(&self) -> State {
-        self.load("state.json").unwrap_or_default()
-    }
-
-    pub fn save_state(&self, state: &State) -> Result<()> {
-        self.save("state.json", state)
     }
 }
 
