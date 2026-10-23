@@ -30,6 +30,10 @@ const NAME_WIDTH: usize = 40;
 const COLUMNS_PER_BAND: usize = 50;
 const BANDS_SHOWN: usize = 2;
 const ATTEMPTS_SHOWN: usize = 5;
+// nf-md-circle_outline, nf-md-circle and nf-md-dots_vertical.
+const RING: &str = "\u{f0766}";
+const DOT: &str = "\u{f0765}";
+const MORE: &str = "\u{f01d9}";
 const FLASH: Duration = Duration::from_secs(1);
 const COLUMN_MAX: usize = 40;
 
@@ -653,9 +657,8 @@ impl<'a> Watch<'a> {
                 .count();
             format!("  {}/{tried} tried", self.solved())
         };
-        let per_band = width
-            .saturating_sub(PREFIX.len() + count.len())
-            .clamp(1, COLUMNS_PER_BAND);
+        let per_band =
+            (width.saturating_sub(PREFIX.len() + count.len()) / 2).clamp(1, COLUMNS_PER_BAND);
         let mut columns = Vec::new();
         for (at, id) in self.ids.iter().enumerate() {
             let several = self
@@ -696,6 +699,7 @@ impl<'a> Watch<'a> {
                         Some(cell) => out.push_str(cell),
                         None => out.push(' '),
                     }
+                    out.push(' ');
                 }
                 out.push('\n');
             }
@@ -708,10 +712,10 @@ impl<'a> Watch<'a> {
             // A cross on the baseline marks a problem with more than one solution to swap between.
             for (_, is_current, several) in chunk.iter() {
                 let base = match (is_current, several) {
-                    (true, true) => "╋".bold(),
-                    (true, false) => "━".bold(),
-                    (false, true) => "┼".dim(),
-                    (false, false) => "─".dim(),
+                    (true, true) => "━╋".bold(),
+                    (true, false) => "━━".bold(),
+                    (false, true) => "─┼".dim(),
+                    (false, false) => "──".dim(),
                 };
                 out.push_str(&base.to_string());
             }
@@ -723,16 +727,16 @@ impl<'a> Watch<'a> {
     }
 
     // Bottom-up cells: the last attempts, then the local result when it is newer than them.
+    // Rings are submissions and the filled circle is the local result, all nerd font glyphs.
     fn column(&self, id: &ProblemId) -> Vec<String> {
         let mut cells = Vec::new();
         let attempts = self.history.get(id).map_or(&[][..], Vec::as_slice);
         for attempt in attempts {
-            let ring = "○";
             let ring = match attempt.mark {
-                Mark::Accepted => ring.green(),
-                Mark::Rejected => ring.red(),
-                Mark::CompilationError => ring.dark_grey(),
-                Mark::Testing => ring.yellow(),
+                Mark::Accepted => RING.green(),
+                Mark::Rejected => RING.red(),
+                Mark::CompilationError => RING.dark_grey(),
+                Mark::Testing => RING.yellow(),
             };
             cells.push(ring.to_string());
         }
@@ -741,16 +745,17 @@ impl<'a> Watch<'a> {
             .source_of(id)
             .and_then(|source| self.locals.get(&key(source)));
         match local {
-            Some(Local::Pending) => cells.push("•".dim().to_string()),
+            Some(Local::Pending) => cells.push(DOT.dark_grey().to_string()),
             Some(Local::Ran { passed, at }) if *at > last => {
-                let dot = if *passed { "•".green() } else { "•".red() };
+                let dot = if *passed { DOT.green() } else { DOT.red() };
                 cells.push(dot.to_string());
             }
             Some(Local::Ran { .. }) | None => {}
         }
+        // Five cells show; more get a mark on a row of its own above them.
         if cells.len() > ATTEMPTS_SHOWN {
-            cells.drain(..cells.len() - (ATTEMPTS_SHOWN - 1));
-            cells.push("⋮".dim().to_string());
+            cells.drain(..cells.len() - ATTEMPTS_SHOWN);
+            cells.push(MORE.dark_grey().to_string());
         }
         cells
     }
