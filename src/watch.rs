@@ -884,8 +884,19 @@ impl<'a> Watch<'a> {
 
     // Each symbol with how many problems are in that state: the whole list, or the grid on
     // screen when walking the problemset.
-    fn legend(&self) -> Vec<String> {
+    fn legend(&self, width: usize) -> Vec<String> {
         let ids = &self.ids;
+        // Running work outside the grid's window would otherwise make the count look stuck.
+        let window = self.offset..self.offset + per_band(width);
+        let hidden = ids
+            .iter()
+            .enumerate()
+            .filter(|(at, id)| !window.contains(at) && self.local(id) == Some(Local::Running))
+            .count();
+        let running = match hidden {
+            0 => "running".to_string(),
+            hidden => format!("running ({hidden} off screen)"),
+        };
         let remote = |mark: Mark| {
             ids.iter()
                 .filter(|id| self.remote(id) == Some(mark))
@@ -917,7 +928,7 @@ impl<'a> Watch<'a> {
         let local = [
             entry(local_dot(Local::Pass), local(Local::Pass), "pass"),
             entry(local_dot(Local::Fail), local(Local::Fail), "fail"),
-            entry(local_dot(Local::Running), local(Local::Running), "running"),
+            entry(local_dot(Local::Running), local(Local::Running), &running),
             entry(
                 local_dot(Local::NoSamples),
                 local(Local::NoSamples),
@@ -1409,7 +1420,7 @@ impl<'a> Watch<'a> {
 
         lines.extend(self.progress(width));
         lines.push(String::new());
-        lines.extend(self.legend().iter().map(|line| center(line, width)));
+        lines.extend(self.legend(width).iter().map(|line| center(line, width)));
         lines.push(String::new());
 
         // One row for all messages, so the report under it always starts at the same one.
