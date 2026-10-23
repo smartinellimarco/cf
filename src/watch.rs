@@ -715,6 +715,7 @@ impl<'a> Watch<'a> {
             .take(BANDS_SHOWN)
             .collect();
         let popup = self.popup_lines();
+        let mut top = 0;
         let mut lines = Vec::new();
         for chunk in bands {
             let here = chunk.iter().any(|(_, is_current)| *is_current);
@@ -731,8 +732,11 @@ impl<'a> Watch<'a> {
                     // Every cell takes two columns: a glyph and its gap, or a spinner frame.
                     let cell = cells.get(row).map_or("", String::as_str);
                     let gap = " ".repeat(2usize.saturating_sub(visible(cell)));
-                    if *is_current && row == self.row && !cell.is_empty() {
-                        let _ = write!(line, "\x1b[7m{cell}\x1b[27m{gap}");
+                    // The cursor's brackets take the gaps around its cell, so nothing shifts.
+                    let cursor = *is_current && row == self.row && !cell.is_empty();
+                    if cursor && gap.len() == 1 && line.ends_with(' ') {
+                        line.pop();
+                        let _ = write!(line, "{}{cell}{}", "[".bold(), "]".bold());
                     } else {
                         let _ = write!(line, "{cell}{gap}");
                     }
@@ -749,19 +753,22 @@ impl<'a> Watch<'a> {
                 let _ = write!(base, "{mark} ");
             }
             band.push(base);
-            // The popup sits to the right of the band, its middle at the cursor's row.
-            if here && !popup.is_empty() {
-                let cursor = ATTEMPTS_SHOWN + 1 - self.row;
-                let top = cursor
+            if here {
+                // The popup's middle sits at the cursor's row.
+                let cursor = lines.len() + ATTEMPTS_SHOWN + 1 - self.row;
+                top = cursor
                     .saturating_sub(popup.len() / 2)
-                    .min(band.len().saturating_sub(popup.len()));
-                for (at, box_line) in popup.iter().enumerate() {
-                    if let Some(line) = band.get_mut(top + at) {
-                        let _ = write!(line, " {box_line}");
-                    }
-                }
+                    .min(lines.len() + band.len().saturating_sub(popup.len()));
             }
             lines.extend(band);
+        }
+        // The grid centers on its own and the popup overlays it on the right, so opening or
+        // closing it never moves the grid.
+        let mut lines = center_block(&lines, width);
+        for (at, box_line) in popup.iter().enumerate() {
+            if let Some(line) = lines.get_mut(top + at) {
+                let _ = write!(line, " {box_line}");
+            }
         }
         lines
     }
@@ -1355,7 +1362,7 @@ impl<'a> Watch<'a> {
         lines.push(center(&motions, width));
         lines.push(String::new());
 
-        lines.extend(center_block(&self.progress(width), width));
+        lines.extend(self.progress(width));
         lines.push(String::new());
         lines.extend(center_block(&self.legend(), width));
         lines.push(String::new());
