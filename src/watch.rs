@@ -754,14 +754,6 @@ impl<'a> Watch<'a> {
             .iter()
             .filter(|id| self.remote(id).is_none() && self.local(id).is_none())
             .count();
-        let several = ids
-            .iter()
-            .filter(|id| {
-                self.sources
-                    .get(id)
-                    .is_some_and(|sources| sources.len() > 1)
-            })
-            .count();
         let entry = |symbol: String, count: usize, label: &str| format!("{symbol} {count} {label}");
         let remote = [
             entry(ring(Mark::Accepted), remote(Mark::Accepted), "accepted"),
@@ -784,7 +776,6 @@ impl<'a> Watch<'a> {
                 "no samples",
             ),
             entry(EMPTY.dark_grey().to_string(), untouched, "untouched"),
-            entry("┼".dim().to_string(), several, "several languages"),
         ];
         vec![
             format!("{} {}", "remote".bold(), remote.join("   ")),
@@ -1273,6 +1264,7 @@ impl<'a> Watch<'a> {
         lines.extend(messages);
         lines.push(String::new());
         lines.extend(center_block(&self.legend(&shown), width));
+        lines.push(String::new());
 
         let id = self.id();
         let url = id.url(Page::Problem);
