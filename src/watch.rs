@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -12,14 +12,14 @@ use crossterm::{cursor, execute, queue, terminal};
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
 
-use crate::codeforces::{self, Client, Page, Problem, ProblemId, Submission};
+use crate::codeforces::{self, Client, Handle, Page, Problem, ProblemId, Submission};
 use crate::config::{Config, Dirs, Lang, Paths, Quote};
 use crate::run::{self, Outcome, Report};
 use crate::statement::{self, Files, Kind, Statement};
 
 const TICK: Duration = Duration::from_millis(100);
 const POLL_EVERY: Duration = Duration::from_secs(5);
-const POLL_FOR_SECONDS: i64 = 15 * 60;
+const POLL_FOR: Duration = Duration::from_secs(15 * 60);
 // Allows for clock skew between this machine and Codeforces.
 const SLACK_SECONDS: i64 = 30;
 const OUTPUT_LINES: usize = 20;
@@ -43,7 +43,7 @@ enum View {
 enum Verdict {
     Idle,
     Waiting,
-    Offline,
+    Retrying { reason: String },
     Testing { passed: u32 },
     Accepted,
     Rejected { verdict: String, test: u32 },
@@ -54,10 +54,8 @@ enum Action {
     Quit,
 }
 
-struct Pending {
-    since: i64,
-    polled: Option<Instant>,
-}
+// A verdict, plus the submission once it is final.
+type Update = (Verdict, Option<Submission>);
 
 struct Screen;
 
@@ -98,7 +96,7 @@ pub struct Watch<'a> {
     note: String,
     copied: Option<Instant>,
     verdict: Verdict,
-    pending: Option<Pending>,
+    updates: Option<Receiver<Update>>,
     stale: bool,
     events: Receiver<DebounceEventResult>,
     debouncer: Debouncer<RecommendedWatcher>,
@@ -149,7 +147,7 @@ impl<'a> Watch<'a> {
             note: String::new(),
             copied: None,
             verdict: Verdict::Idle,
-            pending: None,
+            updates: None,
             stale: false,
             events,
             debouncer,
@@ -448,7 +446,7 @@ impl<'a> Watch<'a> {
         self.note.clear();
         self.strays.clear();
         self.verdict = Verdict::Idle;
-        self.pending = None;
+        self.updates = None;
         if self.id().is_gym() {
             self.report = Report::Failed(format!(
                 "{} is a gym problem, cf can't open those because their statements aren't public pages",
@@ -556,61 +554,39 @@ impl<'a> Watch<'a> {
     }
 
     fn expect(&mut self) {
-        if self.pending.is_none() {
-            self.pending = Some(Pending {
-                since: codeforces::now(),
-                polled: None,
-            });
+        if self.updates.is_none() {
+            let (sender, updates) = mpsc::channel();
+            let client = self.client.clone();
+            let handle = self.config.handle.clone();
+            let id = self.id().clone();
+            let since = codeforces::now();
+            std::thread::spawn(move || poll(client, handle, id, since, sender));
+            self.updates = Some(updates);
             self.verdict = Verdict::Waiting;
         }
     }
 
     fn poll(&mut self) -> bool {
-        let Some(Pending { since, polled }) = &mut self.pending else {
+        let Some(updates) = &self.updates else {
             return false;
         };
-        if polled.is_some_and(|at| at.elapsed() < POLL_EVERY) {
-            return false;
-        }
-        *polled = Some(Instant::now());
-        let since = *since;
-        if codeforces::now() - since > POLL_FOR_SECONDS {
-            self.pending = None;
-            self.verdict = Verdict::Idle;
-            return true;
-        }
-
-        let Ok(latest) = self.client.latest(&self.config.handle) else {
-            self.verdict = Verdict::Offline;
-            return true;
+        let mut received = Vec::new();
+        let finished = loop {
+            match updates.try_recv() {
+                Ok(update) => received.push(update),
+                Err(TryRecvError::Empty) => break false,
+                Err(TryRecvError::Disconnected) => break true,
+            }
         };
-        for submission in latest {
-            if submission.creation_time_seconds < since - SLACK_SECONDS
-                || submission.problem.id().as_ref() != Some(self.id())
-            {
-                continue;
-            }
-            let passed = submission.passed_test_count;
-            match submission.verdict.as_deref() {
-                None | Some("TESTING") => self.verdict = Verdict::Testing { passed },
-                Some("OK") => {
-                    self.verdict = Verdict::Accepted;
-                    self.pending = None;
-                    self.submissions.push(submission);
-                }
-                Some(verdict) => {
-                    self.verdict = Verdict::Rejected {
-                        verdict: verdict.to_string(),
-                        test: passed + 1,
-                    };
-                    self.pending = None;
-                    self.submissions.push(submission);
-                }
-            }
-            return true;
+        if finished {
+            self.updates = None;
         }
-        self.verdict = Verdict::Waiting;
-        true
+        let changed = !received.is_empty();
+        for (verdict, submission) in received {
+            self.verdict = verdict;
+            self.submissions.extend(submission);
+        }
+        changed
     }
 
     fn render(&self) -> Result<()> {
@@ -784,7 +760,7 @@ impl<'a> Watch<'a> {
         let verdict = match &self.verdict {
             Verdict::Idle => String::new(),
             Verdict::Waiting => "Waiting for your submission…".to_string(),
-            Verdict::Offline => "Can't reach Codeforces, retrying…".to_string(),
+            Verdict::Retrying { reason } => format!("{reason}, retrying…"),
             Verdict::Testing { passed } => format!("Testing… {passed} passed"),
             Verdict::Accepted => format!(
                 "{}\nEnter `n` to move on to the next problem",
@@ -814,7 +790,7 @@ impl<'a> Watch<'a> {
             Verdict::Accepted => "next".underlined().to_string(),
             Verdict::Idle
             | Verdict::Waiting
-            | Verdict::Offline
+            | Verdict::Retrying { .. }
             | Verdict::Testing { .. }
             | Verdict::Rejected { .. } => "next".to_string(),
         };
@@ -935,6 +911,60 @@ fn wrap(line: &str, width: usize) -> Vec<String> {
         column += 1;
     }
     rows
+}
+
+// Runs on its own thread so a slow or missing connection never blocks the screen.
+fn poll(mut client: Client, handle: Handle, id: ProblemId, since: i64, updates: Sender<Update>) {
+    let mut online = Duration::ZERO;
+    while online < POLL_FOR {
+        std::thread::sleep(POLL_EVERY);
+        let update = match client.latest(&handle) {
+            Ok(latest) => {
+                online += POLL_EVERY;
+                verdict(latest, &id, since)
+            }
+            // Time without a connection doesn't count against the limit.
+            Err(error) if codeforces::unreachable(&error) => (
+                Verdict::Retrying {
+                    reason: "Can't reach Codeforces".to_string(),
+                },
+                None,
+            ),
+            Err(error) => {
+                online += POLL_EVERY;
+                let reason = format!("{error:#}");
+                (Verdict::Retrying { reason }, None)
+            }
+        };
+        let done = update.1.is_some();
+        if updates.send(update).is_err() || done {
+            return;
+        }
+    }
+    let _ = updates.send((Verdict::Idle, None));
+}
+
+fn verdict(latest: Vec<Submission>, id: &ProblemId, since: i64) -> Update {
+    for submission in latest {
+        if submission.creation_time_seconds < since - SLACK_SECONDS
+            || submission.problem.id().as_ref() != Some(id)
+        {
+            continue;
+        }
+        let passed = submission.passed_test_count;
+        return match submission.verdict.as_deref() {
+            None | Some("TESTING") => (Verdict::Testing { passed }, None),
+            Some("OK") => (Verdict::Accepted, Some(submission)),
+            Some(verdict) => {
+                let verdict = Verdict::Rejected {
+                    verdict: verdict.to_string(),
+                    test: passed + 1,
+                };
+                (verdict, Some(submission))
+            }
+        };
+    }
+    (Verdict::Waiting, None)
 }
 
 #[cfg(test)]

@@ -139,10 +139,15 @@ pub enum Refresh {
     Fetch,
 }
 
+#[derive(Clone)]
 pub struct Client {
     agent: Agent,
     cache: PathBuf,
     last_call: Option<Instant>,
+}
+
+pub fn unreachable(error: &anyhow::Error) -> bool {
+    error.is::<ureq::Error>()
 }
 
 pub fn now() -> i64 {
@@ -293,5 +298,21 @@ fn parse<T: DeserializeOwned>(body: &str) -> Result<T> {
     match (status.as_str(), result) {
         ("OK", Some(result)) => Ok(result),
         _ => bail!("Codeforces API: {}", comment.unwrap_or(status)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tells_a_dead_connection_from_an_api_error() {
+        let mut client = Client::new(std::env::temp_dir()).unwrap();
+        // Port 9 is discard, closed on any normal machine, so the connection is refused.
+        let refused = client.api::<()>("http://127.0.0.1:9/").unwrap_err();
+        assert!(unreachable(&refused));
+        assert!(!unreachable(
+            &parse::<()>(r#"{"status":"FAILED","comment":"x"}"#).unwrap_err()
+        ));
     }
 }
