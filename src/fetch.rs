@@ -33,6 +33,15 @@ impl Fetcher {
         Fetcher { shared, done }
     }
 
+    pub fn add(&self, id: ProblemId) {
+        let (queue, wake) = &*self.shared;
+        let mut queue = queue.lock().unwrap();
+        if !queue.contains(&id) {
+            queue.push_back(id);
+            wake.notify_all();
+        }
+    }
+
     // The problem on screen goes first; the ones passed by keep their place behind it.
     pub fn first(&self, id: ProblemId) {
         let (queue, wake) = &*self.shared;
