@@ -89,13 +89,13 @@ enum Motion {
     Find { forward: bool, standing: Standing },
 }
 
+// What ]f, ]s, ]t and ]e look for: the first three on Codeforces, the last one here.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Standing {
-    // Rejected on Codeforces without an accept, or the samples fail here.
     Failed,
     Solved,
-    // Nothing sent and no solution here.
     Untouched,
+    LocalError,
 }
 
 enum View {
@@ -352,6 +352,8 @@ impl<'a> Watch<'a> {
             let fetched: Vec<Fetched> = self.fetcher.done.try_iter().collect();
             for Fetched { id, statement } in fetched {
                 if id != *self.id() {
+                    self.run_all(&id, statement.is_ok());
+                    dirty = true;
                     continue;
                 }
                 match statement {
@@ -405,12 +407,13 @@ impl<'a> Watch<'a> {
             let motion = match (prefix, char) {
                 ('g', 'g') => Motion::First,
                 ('g', 'e') => Motion::Last,
-                (']' | '[', 'f' | 's' | 't') => Motion::Find {
+                (']' | '[', 'f' | 's' | 't' | 'e') => Motion::Find {
                     forward: prefix == ']',
                     standing: match char {
                         'f' => Standing::Failed,
                         's' => Standing::Solved,
-                        _ => Standing::Untouched,
+                        't' => Standing::Untouched,
+                        _ => Standing::LocalError,
                     },
                 },
                 _ => return Action::Continue,
@@ -463,7 +466,7 @@ impl<'a> Watch<'a> {
             Motion::First => Some(0),
             Motion::Last => Some(last),
             Motion::Find { forward, standing } => {
-                let found = |at: &usize| self.standing(&self.ids[*at]) == Some(standing);
+                let found = |at: &usize| self.is(&self.ids[*at], standing);
                 if forward {
                     (from + 1..=last).find(found)
                 } else {
@@ -485,6 +488,10 @@ impl<'a> Watch<'a> {
                     standing: Standing::Failed,
                     ..
                 } => "failed",
+                Motion::Find {
+                    standing: Standing::LocalError,
+                    ..
+                } => "locally failing",
                 _ => "untouched",
             };
             let side = match motion {
@@ -575,6 +582,12 @@ impl<'a> Watch<'a> {
         });
         let mut jobs = Vec::new();
         for (id, source) in pending {
+            // Its samples come with the statement; the solution runs once they are here.
+            if !self.samples.join(id.to_string()).is_dir() {
+                self.locals.insert(key(&source), Local::Running);
+                self.fetcher.add(id);
+                continue;
+            }
             let job = self.job(&id, &source);
             let hash = sweep::hash(&job.paths, &job.lang, &job.files).ok();
             match sweep::load(&self.results, &job.key) {
@@ -611,6 +624,19 @@ impl<'a> Watch<'a> {
             }
         };
         self.locals.insert(key, local);
+    }
+
+    // Runs a problem's solutions in the background once its samples arrived.
+    fn run_all(&mut self, id: &ProblemId, downloaded: bool) {
+        let sources = self.sources.get(id).cloned().unwrap_or_default();
+        for source in sources {
+            if downloaded {
+                let job = self.job(id, &source);
+                self.runner.add(vec![job]);
+            } else {
+                self.locals.remove(&key(&source));
+            }
+        }
     }
 
     fn finish(&mut self, done: Done) {
@@ -707,16 +733,7 @@ impl<'a> Watch<'a> {
     fn progress(&self, width: usize) -> (Vec<String>, Vec<ProblemId>) {
         let per_band = (width / 2).clamp(1, COLUMNS_PER_BAND);
         let mut columns = Vec::new();
-        let mut current = 0;
         for (at, id) in self.ids.iter().enumerate() {
-            // Walking the problemset, only problems with something to show get a column.
-            let empty = self.remote(id).is_none() && self.local(id).is_none();
-            if !self.listed && empty && at != self.current {
-                continue;
-            }
-            if at == self.current {
-                current = columns.len();
-            }
             let several = self
                 .sources
                 .get(id)
@@ -735,7 +752,8 @@ impl<'a> Watch<'a> {
                 .take(BANDS_SHOWN)
                 .collect()
         } else {
-            let first = current
+            let first = self
+                .current
                 .saturating_sub(per_band / 2)
                 .min(columns.len().saturating_sub(per_band));
             vec![&columns[first..(first + per_band).min(columns.len())]]
@@ -833,17 +851,12 @@ impl<'a> Watch<'a> {
         attempts.last().map(|attempt| attempt.mark)
     }
 
-    // Looks at both sources, like the grid: a red ring or a red dot is a failure.
-    fn standing(&self, id: &ProblemId) -> Option<Standing> {
-        let remote = self.remote(id);
-        let local = self.local(id);
-        match (remote, local) {
-            (Some(Mark::Accepted), _) => Some(Standing::Solved),
-            (Some(Mark::Rejected | Mark::CompilationError), _) | (_, Some(Local::Fail)) => {
-                Some(Standing::Failed)
-            }
-            (None, None) => Some(Standing::Untouched),
-            _ => None,
+    fn is(&self, id: &ProblemId, standing: Standing) -> bool {
+        match standing {
+            Standing::Failed => self.status(id) == Status::Tried,
+            Standing::Solved => self.status(id) == Status::Solved,
+            Standing::Untouched => self.status(id) == Status::Todo,
+            Standing::LocalError => self.local(id) == Some(Local::Fail),
         }
     }
 
@@ -1389,6 +1402,7 @@ impl<'a> Watch<'a> {
             ("]f", "failed"),
             ("]s", "solved"),
             ("]t", "untouched"),
+            ("]e", "local error"),
         ]);
         lines.push(center(&actions, width));
         lines.push(center(&motions, width));
