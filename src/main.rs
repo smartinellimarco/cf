@@ -73,6 +73,7 @@ fn main() -> ExitCode {
 
 fn start(cli: Cli) -> Result<()> {
     let dirs = Dirs::new()?;
+    dirs.prune();
     let mut config = Config::load(&dirs)?;
     let mut client = Client::new(dirs.cache.clone())?;
     if config.handle.0.is_empty() {
