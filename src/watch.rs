@@ -25,7 +25,7 @@ const POLL_EVERY: Duration = Duration::from_secs(5);
 const POLL_FOR: Duration = Duration::from_secs(15 * 60);
 // Allows for clock skew between this machine and Codeforces.
 const SLACK_SECONDS: i64 = 30;
-const OUTPUT_LINES: usize = 20;
+const REPORT_LINES: usize = 14;
 const NAME_WIDTH: usize = 40;
 const COLUMNS_PER_BAND: usize = 50;
 const BANDS_SHOWN: usize = 2;
@@ -1076,92 +1076,98 @@ impl<'a> Watch<'a> {
         (body, footer)
     }
 
-    fn problem(&self, width: usize) -> (String, String) {
-        let mut body = String::new();
+    // Only the first failing sample shows, so the report fits its fixed height.
+    fn report(&self) -> String {
+        let mut out = String::new();
         match &self.report {
-            Report::Downloading => body.push_str("Downloading the statement…\n"),
-            Report::NoSolution => body.push_str("No solution yet, e to start one\n"),
-            Report::Building => body.push_str("Building…\n"),
-            Report::Failed(message) => {
-                let _ = writeln!(body, "{}", message.as_str().red());
-            }
+            Report::Downloading => out.push_str("Downloading the statement…"),
+            Report::NoSolution => out.push_str("No solution yet, e to start one"),
+            Report::Building => out.push_str("Building…"),
+            Report::Failed(message) => out.push_str(&message.as_str().red().to_string()),
             Report::BuildFailed(log) => {
-                let _ = writeln!(body, "{}\n\n{}", "Build failed".red().bold(), clip(log));
+                let _ = write!(out, "{}\n\n{}", "Build failed".red().bold(), log);
             }
-            Report::NoSamples => body.push_str(
-                "No samples to run, interactive problems can only be judged on Codeforces\n",
+            Report::NoSamples => out.push_str(
+                "No samples to run, interactive problems can only be judged on Codeforces",
             ),
             Report::Ran(outcomes) => {
-                for (k, outcome) in outcomes {
-                    match outcome {
-                        Outcome::Pass { elapsed } => {
-                            let _ = writeln!(
-                                body,
-                                "{} {}",
-                                format!("Sample {k} ✓").green(),
-                                format!("{} ms", elapsed.as_millis()).dim()
-                            );
-                        }
-                        Outcome::Wrong {
-                            elapsed,
-                            expected,
-                            got,
-                        } => {
-                            let _ = writeln!(
-                                body,
-                                "{} {}",
-                                format!("Sample {k} ✗ wrong answer").red(),
-                                format!("{} ms", elapsed.as_millis()).dim()
-                            );
-                            body.push_str(&diff(expected, got));
-                        }
-                        Outcome::Crash { elapsed, stderr } => {
-                            let _ = writeln!(
-                                body,
-                                "{} {}\n{}",
-                                format!("Sample {k} ✗ runtime error").red(),
-                                format!("{} ms", elapsed.as_millis()).dim(),
-                                clip(stderr)
-                            );
-                        }
-                        Outcome::Timeout => {
-                            let _ = writeln!(body, "{}", format!("Sample {k} ✗ over 5 s").red());
-                        }
+                let mut failing = outcomes
+                    .iter()
+                    .filter(|(_, outcome)| !matches!(outcome, Outcome::Pass { .. }));
+                let Some((k, first)) = failing.next() else {
+                    let _ = write!(
+                        out,
+                        "{}",
+                        format!("Samples pass ✓ ({})", outcomes.len())
+                            .green()
+                            .bold()
+                    );
+                    return out;
+                };
+                let rest: Vec<String> = failing.map(|(k, _)| k.to_string()).collect();
+                if !rest.is_empty() {
+                    let _ = writeln!(
+                        out,
+                        "{}",
+                        format!("also failing: {}", rest.join(", ")).red()
+                    );
+                }
+                match first {
+                    Outcome::Pass { .. } => {}
+                    Outcome::Wrong {
+                        elapsed,
+                        expected,
+                        got,
+                    } => {
+                        let _ = write!(
+                            out,
+                            "{} {}\n{}",
+                            format!("Sample {k} ✗ wrong answer").red(),
+                            format!("{} ms", elapsed.as_millis()).dim(),
+                            diff(expected, got)
+                        );
+                    }
+                    Outcome::Crash { elapsed, stderr } => {
+                        let _ = write!(
+                            out,
+                            "{} {}\n{}",
+                            format!("Sample {k} ✗ runtime error").red(),
+                            format!("{} ms", elapsed.as_millis()).dim(),
+                            stderr
+                        );
+                    }
+                    Outcome::Timeout => {
+                        let _ = write!(out, "{}", format!("Sample {k} ✗ over 5 s").red());
                     }
                 }
             }
         }
+        out
+    }
 
+    fn messages(&self) -> Vec<String> {
+        let mut messages = Vec::new();
         if !self.strays.is_empty() {
-            let _ = writeln!(
-                body,
-                "\n{}",
-                format!(
-                    "Build wrote {} next to the source instead of {{build}}",
-                    self.strays.join(", ")
-                )
-                .yellow()
+            let stray = format!(
+                "Build wrote {} next to the source instead of {{build}}",
+                self.strays.join(", ")
             );
+            messages.push(stray.yellow().to_string());
         }
         let Files { input, output } = &self.files;
         if input.is_some() || output.is_some() {
             let input = input.as_deref().unwrap_or("stdin");
             let output = output.as_deref().unwrap_or("stdout");
-            let _ = writeln!(
-                body,
-                "\n{}",
-                format!("This problem reads {input} and writes {output}").yellow()
-            );
+            let files = format!("This problem reads {input} and writes {output}");
+            messages.push(files.yellow().to_string());
         }
         if self.report.passed() {
             let shown = self.shown();
             let lang = self.lang(&shown.source);
-            let _ = writeln!(body, "\n{}", "Samples pass ✓".green().bold());
-            let _ = writeln!(
-                body,
+            messages.push(format!(
                 "Submit `{}`, the verdict shows up here",
                 shown.expand(&lang.submit, Quote::Plain)
-            );
+            ));
         }
         let verdict = match &self.verdict {
             Verdict::Idle => String::new(),
@@ -1169,18 +1175,40 @@ impl<'a> Watch<'a> {
             Verdict::Retrying { reason } => format!("{reason}, retrying…"),
             Verdict::Testing { passed } => format!("Testing… {passed} passed"),
             Verdict::Accepted => format!(
-                "{}\nEnter `n` to move on to the next problem",
+                "{} Enter `n` to move on to the next problem",
                 "Accepted ✓".green().bold()
             ),
             Verdict::Rejected { verdict, test } => {
                 format!("{}", format!("{verdict} on test {test}").red().bold())
             }
         };
-        for line in [self.note.as_str(), verdict.as_str()] {
+        for line in [&self.note, &verdict] {
             if !line.is_empty() {
-                let _ = writeln!(body, "\n{line}");
+                messages.push(line.clone());
             }
         }
+        messages
+    }
+
+    // Like rustlings the view flows top to bottom, and the report keeps a fixed height so
+    // nothing below it moves when it changes.
+    fn problem(&self, width: usize) -> (String, String) {
+        let messages = self.messages();
+        let room = REPORT_LINES.saturating_sub(messages.len() + 1);
+        let mut lines: Vec<String> = Vec::new();
+        for line in self.report().lines() {
+            lines.extend(wrap(line, width));
+        }
+        if lines.len() > room {
+            lines.truncate(room.saturating_sub(1));
+            lines.push("…".dim().to_string());
+        }
+        lines.resize(room, String::new());
+        lines.push(String::new());
+        lines.extend(messages);
+        lines.resize(REPORT_LINES, String::new());
+        let mut body = lines.join("\n");
+        body.push('\n');
 
         let id = self.id();
         let url = id.url(Page::Problem);
@@ -1237,8 +1265,8 @@ impl<'a> Watch<'a> {
                 ("q", "quit"),
             ])
         );
-        // The footer stays put at the bottom, so a report changing size doesn't move it.
-        (body, footer)
+        body.push_str(&footer);
+        (body, String::new())
     }
 }
 
@@ -1261,19 +1289,6 @@ fn hotkeys(keys: &[(&str, &str)]) -> String {
     out
 }
 
-fn clip(text: &str) -> String {
-    let mut out = String::new();
-    for (at, line) in text.lines().enumerate() {
-        if at == OUTPUT_LINES {
-            out.push_str("…\n");
-            break;
-        }
-        out.push_str(line);
-        out.push('\n');
-    }
-    out
-}
-
 fn diff(expected: &str, got: &str) -> String {
     let expected: Vec<&str> = expected.lines().collect();
     let got: Vec<&str> = got.lines().collect();
@@ -1288,7 +1303,7 @@ fn diff(expected: &str, got: &str) -> String {
         "got".dim()
     );
     let rows = expected.len().max(got.len());
-    for at in 0..rows.min(OUTPUT_LINES) {
+    for at in 0..rows {
         let left = expected.get(at).copied().unwrap_or("");
         let right = got.get(at).copied().unwrap_or("");
         let left: String = left.chars().take(COLUMN_MAX).collect();
@@ -1298,9 +1313,6 @@ fn diff(expected: &str, got: &str) -> String {
             right.red().to_string()
         };
         let _ = writeln!(out, "{left:<width$}{right}");
-    }
-    if rows > OUTPUT_LINES {
-        out.push_str("…\n");
     }
     out
 }
