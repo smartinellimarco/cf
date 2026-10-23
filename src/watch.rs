@@ -750,8 +750,8 @@ impl<'a> Watch<'a> {
         if let Some((row, column)) = cursor
             && !popup.is_empty()
         {
-            // Above the cursor, its bottom on the cursor's row, so the rows below stay readable.
-            let top = (row + 1).saturating_sub(popup.len());
+            // Above the cursor's row, so neither that row nor the ones below get covered.
+            let top = row.saturating_sub(popup.len());
             for (at, box_line) in popup.iter().enumerate() {
                 if let Some(line) = lines.get_mut(top + at) {
                     *line = overlay(line, column, box_line);
