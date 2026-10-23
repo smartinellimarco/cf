@@ -96,7 +96,8 @@ enum Motion {
     Find { forward: bool, standing: Standing },
 }
 
-// What ]f, ]s, ]t and ]e look for: the first three on Codeforces, the last one here.
+// What ]f, ]s, ]t and ]e look for: the first three by the newest submission on Codeforces, the
+// last one by the result here.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Standing {
     Failed,
@@ -930,11 +931,19 @@ impl<'a> Watch<'a> {
         attempts.last().map(|attempt| attempt.mark)
     }
 
+    // The codeforces motions follow the newest submission, the ring right above the local row.
     fn is(&self, id: &ProblemId, standing: Standing) -> bool {
+        let latest = self
+            .history
+            .get(id)
+            .and_then(|attempts| attempts.last())
+            .map(|attempt| attempt.mark);
         match standing {
-            Standing::Failed => self.status(id) == Status::Tried,
-            Standing::Solved => self.status(id) == Status::Solved,
-            Standing::Untouched => self.status(id) == Status::Todo,
+            Standing::Failed => {
+                matches!(latest, Some(Mark::Rejected | Mark::CompilationError))
+            }
+            Standing::Solved => latest == Some(Mark::Accepted),
+            Standing::Untouched => latest.is_none(),
             Standing::LocalError => self.local(id) == Some(Local::Fail),
         }
     }
