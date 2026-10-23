@@ -114,6 +114,8 @@ impl Drop for Screen {
 
 pub struct Setup {
     pub root: PathBuf,
+    // Walking a list rather than the problemset.
+    pub listed: bool,
     pub ids: Vec<ProblemId>,
     pub start: Option<ProblemId>,
     // Language for new files instead of default_lang, from --lang.
@@ -124,6 +126,7 @@ pub struct Setup {
 
 pub struct Watch<'a> {
     client: &'a mut Client,
+    listed: bool,
     config: Config,
     ids: Vec<ProblemId>,
     history: HashMap<ProblemId, Vec<Attempt>>,
@@ -169,6 +172,7 @@ impl<'a> Watch<'a> {
     ) -> Result<Watch<'a>> {
         let Setup {
             root,
+            listed,
             ids,
             start,
             lang,
@@ -191,6 +195,7 @@ impl<'a> Watch<'a> {
         let sources = local::find(&root, &config);
         let mut watch = Watch {
             client,
+            listed,
             history: history(&submissions),
             config,
             ids,
@@ -608,33 +613,47 @@ impl<'a> Watch<'a> {
     // One column per problem with its attempts stacked upwards, oldest at the bottom.
     fn progress(&self, width: usize) -> String {
         const PREFIX: &str = "Progress: ";
-        let count = format!("  {}/{}", self.solved(), self.ids.len());
-        let room = width.saturating_sub(PREFIX.len() + count.len());
-        let per_band = (room / 2).clamp(1, COLUMNS_PER_BAND);
+        let count = if self.listed {
+            format!("  {}/{}", self.solved(), self.ids.len())
+        } else {
+            let tried = self
+                .ids
+                .iter()
+                .filter(|id| self.status(id) != Status::Todo)
+                .count();
+            format!("  {}/{tried} tried", self.solved())
+        };
+        let per_band = width
+            .saturating_sub(PREFIX.len() + count.len())
+            .clamp(1, COLUMNS_PER_BAND);
         let mut columns = Vec::new();
-        let mut current = 0;
         for (at, id) in self.ids.iter().enumerate() {
-            if at == self.current {
-                current = columns.len();
-            }
             let several = self
                 .sources
                 .get(id)
                 .is_some_and(|sources| sources.len() > 1);
             columns.push((self.column(id), at == self.current, several));
         }
-        // The whole problemset is thousands of columns, so only the bands around the current one show.
-        let bands = columns.len().div_ceil(per_band);
-        let first = (current / per_band)
-            .saturating_sub(BANDS_SHOWN / 2)
-            .min(bands.saturating_sub(BANDS_SHOWN));
+        // A list shows in fixed bands; the problemset is too long, so one band slides with you.
+        let bands: Vec<&[(Vec<String>, bool, bool)]> = if self.listed {
+            let count = columns.len().div_ceil(per_band);
+            let first = (self.current / per_band)
+                .saturating_sub(BANDS_SHOWN / 2)
+                .min(count.saturating_sub(BANDS_SHOWN));
+            columns
+                .chunks(per_band)
+                .skip(first)
+                .take(BANDS_SHOWN)
+                .collect()
+        } else {
+            let first = self
+                .current
+                .saturating_sub(per_band / 2)
+                .min(columns.len().saturating_sub(per_band));
+            vec![&columns[first..(first + per_band).min(columns.len())]]
+        };
         let mut out = String::new();
-        for (band, chunk) in columns
-            .chunks(per_band)
-            .enumerate()
-            .skip(first)
-            .take(BANDS_SHOWN)
-        {
+        for (band, chunk) in bands.iter().enumerate() {
             let height = chunk
                 .iter()
                 .map(|(cells, _, _)| cells.len())
@@ -642,28 +661,27 @@ impl<'a> Watch<'a> {
                 .unwrap_or(0);
             for row in (0..height).rev() {
                 out.push_str(&" ".repeat(PREFIX.len()));
-                for (cells, _, _) in chunk {
+                for (cells, _, _) in chunk.iter() {
                     match cells.get(row) {
                         Some(cell) => out.push_str(cell),
                         None => out.push(' '),
                     }
-                    out.push(' ');
                 }
                 out.push('\n');
             }
-            let lead = if band == first {
+            let lead = if band == 0 {
                 PREFIX.to_string()
             } else {
                 " ".repeat(PREFIX.len())
             };
             out.push_str(&lead);
             // A cross on the baseline marks a problem with more than one solution to swap between.
-            for (_, is_current, several) in chunk {
+            for (_, is_current, several) in chunk.iter() {
                 let base = match (is_current, several) {
-                    (true, true) => "━╋".bold(),
-                    (true, false) => "━━".bold(),
-                    (false, true) => "─┼".dim(),
-                    (false, false) => "──".dim(),
+                    (true, true) => "╋".bold(),
+                    (true, false) => "━".bold(),
+                    (false, true) => "┼".dim(),
+                    (false, false) => "─".dim(),
                 };
                 out.push_str(&base.to_string());
             }
