@@ -125,6 +125,7 @@ impl Problem {
 #[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Submission {
+    pub id: u64,
     pub creation_time_seconds: i64,
     pub problem: Problem,
     pub verdict: Option<String>,
