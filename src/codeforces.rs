@@ -108,11 +108,17 @@ impl Problem {
 #[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Submission {
+    pub id: u64,
     pub creation_time_seconds: i64,
     pub problem: Problem,
+    pub programming_language: String,
     pub verdict: Option<String>,
     #[serde(default)]
     pub passed_test_count: u32,
+    #[serde(default)]
+    pub time_consumed_millis: u64,
+    #[serde(default)]
+    pub memory_consumed_bytes: u64,
 }
 
 #[derive(Deserialize)]

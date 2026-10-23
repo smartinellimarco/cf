@@ -1,8 +1,8 @@
 use std::fs::File;
 use std::io::Read;
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -19,26 +19,45 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(5);
 const OUTPUT_LIMIT: u64 = 16 << 20;
 const REAL_ERROR: f64 = 1e-6;
 
+// What a sample run cost, like the judge reports it: time and peak memory.
+#[derive(Serialize, Deserialize, Clone, Copy)]
+pub struct Usage {
+    pub elapsed: Duration,
+    pub memory: u64,
+}
+
 #[derive(Serialize, Deserialize)]
 pub enum Outcome {
     Pass {
-        elapsed: Duration,
+        usage: Usage,
     },
     Wrong {
-        elapsed: Duration,
+        usage: Usage,
         expected: String,
         got: String,
     },
     Crash {
-        elapsed: Duration,
+        usage: Usage,
         stderr: String,
     },
     Timeout,
     // Right answer, but slower than the problem's time limit.
     Slow {
-        elapsed: Duration,
+        usage: Usage,
         limit: Duration,
     },
+}
+
+impl Outcome {
+    pub fn usage(&self) -> Option<Usage> {
+        match self {
+            Outcome::Pass { usage }
+            | Outcome::Wrong { usage, .. }
+            | Outcome::Crash { usage, .. }
+            | Outcome::Slow { usage, .. } => Some(*usage),
+            Outcome::Timeout => None,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -81,7 +100,7 @@ impl Report {
 
 struct Finished {
     success: bool,
-    elapsed: Duration,
+    usage: Usage,
     stdout: String,
     stderr: String,
 }
@@ -126,13 +145,13 @@ pub fn check(paths: &Paths, lang: &Lang, rules: &Rules, cancel: &AtomicBool) -> 
             None => Outcome::Timeout,
             Some(Finished {
                 success: false,
-                elapsed,
+                usage,
                 stderr,
                 ..
-            }) => Outcome::Crash { elapsed, stderr },
+            }) => Outcome::Crash { usage, stderr },
             Some(Finished {
                 success: true,
-                elapsed,
+                usage,
                 stdout,
                 ..
             }) => {
@@ -140,17 +159,17 @@ pub fn check(paths: &Paths, lang: &Lang, rules: &Rules, cancel: &AtomicBool) -> 
                     Some(name) => std::fs::read_to_string(cwd.join(name)).unwrap_or_default(),
                     None => stdout,
                 };
-                let too_slow = rules.time.filter(|limit| elapsed > *limit);
+                let too_slow = rules.time.filter(|limit| usage.elapsed > *limit);
                 if !same_tokens(&got, &expected) {
                     Outcome::Wrong {
-                        elapsed,
+                        usage,
                         expected,
                         got,
                     }
                 } else if let Some(limit) = too_slow {
-                    Outcome::Slow { elapsed, limit }
+                    Outcome::Slow { usage, limit }
                 } else {
-                    Outcome::Pass { elapsed }
+                    Outcome::Pass { usage }
                 }
             }
         };
@@ -231,7 +250,7 @@ fn sh(
         .context("running sh")?;
     let stdout = drain(child.stdout.take());
     let stderr = drain(child.stderr.take());
-    let Some(status) = wait(&mut child, timeout, cancel)? else {
+    let Some((status, memory)) = wait(&child, timeout, cancel)? else {
         // sh -c forks the real program, so kill the whole group or it keeps running.
         Command::new("kill")
             .args(["-KILL", "--", &format!("-{}", child.id())])
@@ -239,10 +258,13 @@ fn sh(
         child.wait()?;
         return Ok(None);
     };
-    let elapsed = start.elapsed();
+    let usage = Usage {
+        elapsed: start.elapsed(),
+        memory,
+    };
     Ok(Some(Finished {
         success: status.success(),
-        elapsed,
+        usage,
         stdout: stdout.join().unwrap_or_default(),
         stderr: stderr.join().unwrap_or_default(),
     }))
@@ -258,15 +280,29 @@ fn drain(pipe: Option<impl Read + Send + 'static>) -> JoinHandle<String> {
     })
 }
 
+// wait4 instead of Child::wait because it also reports the peak memory, which counts the
+// program sh started since sh waits for it.
 fn wait(
-    child: &mut Child,
+    child: &Child,
     timeout: Duration,
     cancel: &AtomicBool,
-) -> Result<Option<std::process::ExitStatus>> {
+) -> Result<Option<(ExitStatus, u64)>> {
+    let pid = child.id() as libc::pid_t;
     let start = Instant::now();
     while start.elapsed() < timeout && !cancel.load(Ordering::Relaxed) {
-        if let Some(status) = child.try_wait()? {
-            return Ok(Some(status));
+        let mut status = 0;
+        // SAFETY: rusage is plain old data, all zeros is a valid value.
+        let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+        // SAFETY: both pointers are to locals that outlive the call, and pid is our own child.
+        let reaped = unsafe { libc::wait4(pid, &mut status, libc::WNOHANG, &mut usage) };
+        if reaped < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        if reaped == pid {
+            // macOS reports bytes, Linux kilobytes.
+            let unit = if cfg!(target_os = "macos") { 1 } else { 1024 };
+            let memory = u64::try_from(usage.ru_maxrss).unwrap_or(0) * unit;
+            return Ok(Some((ExitStatus::from_raw(status), memory)));
         }
         std::thread::sleep(Duration::from_millis(5));
     }

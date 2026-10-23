@@ -16,7 +16,7 @@ use crate::codeforces::{self, Client, Handle, Page, Problem, ProblemId, Submissi
 use crate::config::{Config, Dirs, Lang, Paths, Quote};
 use crate::fetch::{Fetched, Fetcher};
 use crate::local;
-use crate::run::{Outcome, Report};
+use crate::run::{Outcome, Report, Usage};
 use crate::statement::{self, Rules, Statement};
 use crate::sweep::{self, Done, Job, Runner};
 
@@ -66,6 +66,7 @@ enum Mark {
 struct Attempt {
     mark: Mark,
     at: i64,
+    submission: Submission,
 }
 
 enum Motion {
@@ -146,6 +147,11 @@ pub struct Watch<'a> {
     ids: Vec<ProblemId>,
     history: HashMap<ProblemId, Vec<Attempt>>,
     prefix: Option<char>,
+    // The cursor's row in the current column: 0 is local, 1 the newest submission. `want` is the
+    // row asked for with j/k, kept across problems like vim keeps a column.
+    row: usize,
+    want: usize,
+    popup: bool,
     catalog: HashMap<ProblemId, Problem>,
     submissions: Vec<Submission>,
     current: usize,
@@ -218,6 +224,9 @@ impl<'a> Watch<'a> {
             config,
             ids,
             prefix: None,
+            row: 0,
+            want: 0,
+            popup: true,
             catalog,
             submissions,
             current: 0,
@@ -367,7 +376,7 @@ impl<'a> Watch<'a> {
         let KeyCode::Char(char) = key.code else {
             self.prefix = None;
             if key.code == KeyCode::Esc {
-                return Action::Quit;
+                self.popup = false;
             }
             return Action::Continue;
         };
@@ -392,8 +401,10 @@ impl<'a> Watch<'a> {
         }
         match char {
             'g' | ']' | '[' => self.prefix = Some(char),
-            'n' => self.go(Motion::Next),
-            'p' => self.go(Motion::Prev),
+            'l' => self.go(Motion::Next),
+            'h' => self.go(Motion::Prev),
+            'k' => self.climb(1),
+            'j' => self.climb(-1),
             'q' => return Action::Quit,
             'y' => self.copy(),
             'o' => self.submit(),
@@ -409,7 +420,19 @@ impl<'a> Watch<'a> {
         Action::Continue
     }
 
+    fn rows(&self) -> usize {
+        let attempts = self.history.get(self.id()).map_or(0, Vec::len);
+        attempts.min(ATTEMPTS_SHOWN)
+    }
+
+    fn climb(&mut self, step: isize) {
+        self.row = self.row.saturating_add_signed(step).min(self.rows());
+        self.want = self.row;
+        self.popup = true;
+    }
+
     fn go(&mut self, motion: Motion) {
+        self.popup = true;
         let from = self.current;
         let last = self.ids.len() - 1;
         let to = match motion {
@@ -451,6 +474,7 @@ impl<'a> Watch<'a> {
         };
         if to != self.current {
             self.current = to;
+            self.row = self.want.min(self.rows());
             self.open();
         }
     }
@@ -690,20 +714,32 @@ impl<'a> Watch<'a> {
             .skip(first)
             .take(BANDS_SHOWN)
             .collect();
+        let popup = self.popup_lines();
         let mut lines = Vec::new();
         for chunk in bands {
+            let here = chunk.iter().any(|(_, is_current)| *is_current);
+            let mut band = Vec::new();
             // Always the full height, so what comes below never moves.
             for row in (0..=ATTEMPTS_SHOWN + 1).rev() {
-                let mut line = String::new();
-                for (cells, _) in chunk {
+                let label = match row {
+                    0 => "local",
+                    1 => "cf",
+                    _ => "",
+                };
+                let mut line = format!("{} {} ", format!("{label:>5}").dim(), "│".dim());
+                for (cells, is_current) in chunk {
                     // Every cell takes two columns: a glyph and its gap, or a spinner frame.
                     let cell = cells.get(row).map_or("", String::as_str);
-                    line.push_str(cell);
-                    line.push_str(&" ".repeat(2usize.saturating_sub(visible(cell))));
+                    let gap = " ".repeat(2usize.saturating_sub(visible(cell)));
+                    if *is_current && row == self.row && !cell.is_empty() {
+                        let _ = write!(line, "\x1b[7m{cell}\x1b[27m{gap}");
+                    } else {
+                        let _ = write!(line, "{cell}{gap}");
+                    }
                 }
-                lines.push(line);
+                band.push(line);
             }
-            let mut base = String::new();
+            let mut base = format!("{} ", "      └".dim());
             for (_, is_current) in chunk {
                 let mark = if *is_current {
                     "━".bold()
@@ -712,9 +748,116 @@ impl<'a> Watch<'a> {
                 };
                 let _ = write!(base, "{mark} ");
             }
-            lines.push(base);
+            band.push(base);
+            // The popup sits to the right of the band, its middle at the cursor's row.
+            if here && !popup.is_empty() {
+                let cursor = ATTEMPTS_SHOWN + 1 - self.row;
+                let top = cursor
+                    .saturating_sub(popup.len() / 2)
+                    .min(band.len().saturating_sub(popup.len()));
+                for (at, box_line) in popup.iter().enumerate() {
+                    if let Some(line) = band.get_mut(top + at) {
+                        let _ = write!(line, " {box_line}");
+                    }
+                }
+            }
+            lines.extend(band);
         }
         lines
+    }
+
+    // What the cell under the cursor knows, in a box; nothing for an empty cell or after esc.
+    fn popup_lines(&self) -> Vec<String> {
+        if !self.popup {
+            return Vec::new();
+        }
+        let content = if self.row == 0 {
+            self.local_popup()
+        } else {
+            self.submission_popup()
+        };
+        let Some((title, body)) = content else {
+            return Vec::new();
+        };
+        let inner = body
+            .iter()
+            .map(|line| visible(line))
+            .chain([visible(&title) + 2])
+            .max()
+            .unwrap_or(0);
+        let mut lines = vec![format!(
+            "╭─ {title} {}╮",
+            "─".repeat(inner.saturating_sub(visible(&title) + 1))
+        )];
+        for line in body {
+            let pad = " ".repeat(inner - visible(&line));
+            lines.push(format!("│ {line}{pad} │"));
+        }
+        lines.push(format!("╰{}╯", "─".repeat(inner + 2)));
+        lines
+    }
+
+    fn submission_popup(&self) -> Option<(String, Vec<String>)> {
+        let attempts = self.history.get(self.id())?;
+        let attempt = attempts.iter().rev().nth(self.row - 1)?;
+        let submission = &attempt.submission;
+        let title = format!(
+            "#{} · {}",
+            submission.id,
+            ago(submission.creation_time_seconds)
+        );
+        let verdict = verdict_text(submission);
+        let numbers = format!(
+            "{} ms · {:.1} MB",
+            submission.time_consumed_millis,
+            submission.memory_consumed_bytes as f64 / 1e6
+        );
+        Some((
+            title,
+            vec![
+                format!("{} · {verdict}", submission.programming_language),
+                numbers,
+            ],
+        ))
+    }
+
+    fn local_popup(&self) -> Option<(String, Vec<String>)> {
+        let sources = self.sources.get(self.id())?;
+        let active = self.active.get(self.id()).copied().unwrap_or(0);
+        let mut files = Vec::new();
+        for (at, source) in sources.iter().enumerate() {
+            let lang = self.lang(source);
+            // Checked when the config loads.
+            let color = Color::try_from(lang.color.as_str()).unwrap_or(Color::Reset);
+            let name = format!("{} {}", lang.icon.as_str().with(color), key(source));
+            files.push(if at == active {
+                format!("[{name}]")
+            } else {
+                format!(" {name} ").dim().to_string()
+            });
+        }
+        let mut body = vec![files.concat()];
+        if let Report::Ran(outcomes) = &self.report {
+            let slowest = outcomes
+                .iter()
+                .filter_map(|(_, outcome)| outcome.usage())
+                .max_by_key(|usage| usage.elapsed);
+            let peak = outcomes
+                .iter()
+                .filter_map(|(_, outcome)| outcome.usage())
+                .map(|usage| usage.memory)
+                .max();
+            if let (Some(slowest), Some(memory)) = (slowest, peak) {
+                body.push(numbers(Usage {
+                    elapsed: slowest.elapsed,
+                    memory,
+                }));
+            }
+        }
+        if sources.len() > 1 {
+            body.push("s swaps the solution".dim().to_string());
+        }
+        Some(("local".to_string(), body))
     }
 
     // Each symbol with how many problems are in that state: the whole list, or the grid on
@@ -1073,29 +1216,21 @@ impl<'a> Watch<'a> {
                 };
                 let rest: Vec<String> = failing.map(|(k, _)| k.to_string()).collect();
                 let mut lines = Vec::new();
-                let (what, elapsed, details) = match first {
+                let (what, details) = match first {
                     Outcome::Pass { .. } => return (lines, Vec::new()),
-                    Outcome::Wrong {
-                        elapsed,
-                        expected,
-                        got,
-                    } => (
-                        "wrong answer".to_string(),
-                        Some(elapsed),
-                        diff(expected, got),
+                    Outcome::Wrong { expected, got, .. } => {
+                        ("wrong answer".to_string(), diff(expected, got))
+                    }
+                    Outcome::Crash { stderr, .. } => ("runtime error".to_string(), block(stderr)),
+                    Outcome::Timeout => ("over 5 s".to_string(), Vec::new()),
+                    Outcome::Slow { limit, .. } => (
+                        format!("over the {} ms time limit", limit.as_millis()),
+                        Vec::new(),
                     ),
-                    Outcome::Crash { elapsed, stderr } => {
-                        ("runtime error".to_string(), Some(elapsed), block(stderr))
-                    }
-                    Outcome::Timeout => ("over 5 s".to_string(), None, Vec::new()),
-                    Outcome::Slow { elapsed, limit } => {
-                        let what = format!("over the {} ms time limit", limit.as_millis());
-                        (what, Some(elapsed), Vec::new())
-                    }
                 };
                 let mut line = format!("Sample {k} ✗ {what}").red().to_string();
-                if let Some(elapsed) = elapsed {
-                    let _ = write!(line, "  {}", format!("{} ms", elapsed.as_millis()).dim());
+                if let Some(usage) = first.usage() {
+                    let _ = write!(line, "  {}", numbers(usage).dim());
                 }
                 lines.push(line);
                 if !rest.is_empty() {
@@ -1118,7 +1253,7 @@ impl<'a> Watch<'a> {
             Verdict::Retrying { reason } => format!("{reason}, retrying…"),
             Verdict::Testing { passed } => format!("Testing… {passed} passed"),
             Verdict::Accepted => format!(
-                "{} Enter `n` to move on to the next problem",
+                "{} Enter `l` to move on to the next problem",
                 "Accepted ✓".green().bold()
             ),
             Verdict::Rejected { verdict, test } => {
@@ -1173,24 +1308,7 @@ impl<'a> Watch<'a> {
             }
         }
         // OSC 8 makes the title a link in terminals that support it.
-        let mut title = format!("\x1b]8;;{url}\x1b\\{}\x1b]8;;\x1b\\", title.bold());
-        if let Some(sources) = self.sources.get(id) {
-            let active = self.active.get(id).copied().unwrap_or(0);
-            let mut icons = Vec::new();
-            for (at, source) in sources.iter().enumerate() {
-                let lang = self.lang(source);
-                // Checked when the config loads.
-                let color = Color::try_from(lang.color.as_str()).unwrap_or(Color::Reset);
-                let icon = lang.icon.as_str().with(color);
-                let icon = if at == active {
-                    format!("{}{icon}{}", "[".bold(), "]".bold())
-                } else {
-                    format!(" {icon} ")
-                };
-                icons.push(icon);
-            }
-            let _ = write!(title, "   {}", icons.concat());
-        }
+        let title = format!("\x1b]8;;{url}\x1b\\{}\x1b]8;;\x1b\\", title.bold());
         lines.push(center(&title, width));
         lines.push(String::new());
         // A background like inline code in markdown, from the terminal's own palette.
@@ -1223,8 +1341,9 @@ impl<'a> Watch<'a> {
             ("q", "quit"),
         ]);
         let motions = prompt(&[
-            ("n", &next),
-            ("p", "prev"),
+            ("h", "prev"),
+            ("l", &next),
+            ("j/k", "rows"),
             ("gg", "first"),
             ("ge", "last"),
             ("]f", "failed"),
@@ -1290,6 +1409,42 @@ fn diff(expected: &str, got: &str) -> Vec<String> {
         out.push(format!("{left:<width$}{right}"));
     }
     out
+}
+
+// Like the judge shows them: 46 ms · 3.2 MB.
+fn numbers(usage: Usage) -> String {
+    format!(
+        "{} ms · {:.1} MB",
+        usage.elapsed.as_millis(),
+        usage.memory as f64 / 1e6
+    )
+}
+
+fn ago(seconds: i64) -> String {
+    let elapsed = codeforces::now() - seconds;
+    match elapsed {
+        ..3600 => format!("{} min ago", elapsed / 60),
+        3600..86_400 => format!("{} h ago", elapsed / 3600),
+        _ => format!("{} days ago", elapsed / 86_400),
+    }
+}
+
+// The API's verdicts read like WRONG_ANSWER; the judge shows them with the failing test.
+fn verdict_text(submission: &Submission) -> String {
+    let Some(verdict) = submission.verdict.as_deref() else {
+        return "in queue".to_string();
+    };
+    let words = verdict.to_lowercase().replace('_', " ");
+    let mut chars = words.chars();
+    let words = match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => words,
+    };
+    match verdict {
+        "OK" => "Accepted".to_string(),
+        "COMPILATION_ERROR" | "TESTING" => words,
+        _ => format!("{words} on test {}", submission.passed_test_count + 1),
+    }
 }
 
 fn ring(mark: Mark) -> String {
@@ -1400,6 +1555,7 @@ fn history(submissions: &[Submission]) -> HashMap<ProblemId, Vec<Attempt>> {
         history.entry(id).or_default().push(Attempt {
             mark,
             at: submission.creation_time_seconds,
+            submission: submission.clone(),
         });
     }
     for attempts in history.values_mut() {
