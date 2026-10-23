@@ -38,6 +38,18 @@ const DOT: &str = "\u{f0765}";
 const MORE: &str = "\u{f01d9}";
 // nf-md-circle_small, for a problem with nothing to show yet.
 const EMPTY: &str = "\u{f09df}";
+// nf-md-circle_slice_1 to 8.
+const SPINNER: [&str; 8] = [
+    "\u{f0a9e}",
+    "\u{f0a9f}",
+    "\u{f0aa0}",
+    "\u{f0aa1}",
+    "\u{f0aa2}",
+    "\u{f0aa3}",
+    "\u{f0aa4}",
+    "\u{f0aa5}",
+];
+const SPIN: Duration = Duration::from_millis(120);
 const FLASH: Duration = Duration::from_secs(1);
 const COLUMN_MAX: usize = 40;
 
@@ -74,7 +86,16 @@ enum Motion {
     Prev,
     First,
     Last,
-    Find { forward: bool, status: Status },
+    Find { forward: bool, standing: Standing },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Standing {
+    // Rejected on Codeforces without an accept, or the samples fail here.
+    Failed,
+    Solved,
+    // Nothing sent and no solution here.
+    Untouched,
 }
 
 enum View {
@@ -157,6 +178,8 @@ pub struct Watch<'a> {
     verdict: Verdict,
     updates: Option<Receiver<Update>>,
     stale: bool,
+    // When cf started, to step the spinner.
+    started: Instant,
     // r runs the samples again even when nothing changed.
     rerun: bool,
     events: Receiver<DebounceEventResult>,
@@ -230,6 +253,7 @@ impl<'a> Watch<'a> {
             verdict: Verdict::Idle,
             updates: None,
             stale: false,
+            started: Instant::now(),
             rerun: false,
             events,
             debouncer,
@@ -349,6 +373,10 @@ impl<'a> Watch<'a> {
                 dirty = true;
             }
 
+            if self.locals.values().any(|local| *local == Local::Running) {
+                dirty = true;
+            }
+
             if self.copied.is_some_and(|at| at.elapsed() > FLASH) {
                 self.copied = None;
                 dirty = true;
@@ -379,10 +407,10 @@ impl<'a> Watch<'a> {
                 ('g', 'e') => Motion::Last,
                 (']' | '[', 'f' | 's' | 't') => Motion::Find {
                     forward: prefix == ']',
-                    status: match char {
-                        'f' => Status::Tried,
-                        's' => Status::Solved,
-                        _ => Status::Todo,
+                    standing: match char {
+                        'f' => Standing::Failed,
+                        's' => Standing::Solved,
+                        _ => Standing::Untouched,
                     },
                 },
                 _ => return Action::Continue,
@@ -434,8 +462,8 @@ impl<'a> Watch<'a> {
             Motion::Prev => Some(from.saturating_sub(1)),
             Motion::First => Some(0),
             Motion::Last => Some(last),
-            Motion::Find { forward, status } => {
-                let found = |at: &usize| self.status(&self.ids[*at]) == status;
+            Motion::Find { forward, standing } => {
+                let found = |at: &usize| self.standing(&self.ids[*at]) == Some(standing);
                 if forward {
                     (from + 1..=last).find(found)
                 } else {
@@ -450,11 +478,11 @@ impl<'a> Watch<'a> {
             }
             let name = match motion {
                 Motion::Find {
-                    status: Status::Solved,
+                    standing: Standing::Solved,
                     ..
                 } => "solved",
                 Motion::Find {
-                    status: Status::Tried,
+                    standing: Standing::Failed,
                     ..
                 } => "failed",
                 _ => "untouched",
@@ -674,12 +702,21 @@ impl<'a> Watch<'a> {
         from % self.ids.len()
     }
 
-    // One column per problem with its attempts stacked upwards, oldest at the bottom. Also
+    // One column per problem with its attempts stacked upwards, newest at the bottom. Also
     // returns the problems on screen, which the legend counts when there is no list.
     fn progress(&self, width: usize) -> (Vec<String>, Vec<ProblemId>) {
         let per_band = (width / 2).clamp(1, COLUMNS_PER_BAND);
         let mut columns = Vec::new();
+        let mut current = 0;
         for (at, id) in self.ids.iter().enumerate() {
+            // Walking the problemset, only problems with something to show get a column.
+            let empty = self.remote(id).is_none() && self.local(id).is_none();
+            if !self.listed && empty && at != self.current {
+                continue;
+            }
+            if at == self.current {
+                current = columns.len();
+            }
             let several = self
                 .sources
                 .get(id)
@@ -698,8 +735,7 @@ impl<'a> Watch<'a> {
                 .take(BANDS_SHOWN)
                 .collect()
         } else {
-            let first = self
-                .current
+            let first = current
                 .saturating_sub(per_band / 2)
                 .min(columns.len().saturating_sub(per_band));
             vec![&columns[first..(first + per_band).min(columns.len())]]
@@ -708,7 +744,7 @@ impl<'a> Watch<'a> {
         let mut shown = Vec::new();
         for chunk in bands {
             // Always the full height, so what comes below never moves.
-            for row in (0..=ATTEMPTS_SHOWN).rev() {
+            for row in (0..=ATTEMPTS_SHOWN + 1).rev() {
                 let mut line = String::new();
                 for (cells, _, _, _) in chunk {
                     match cells.get(row) {
@@ -750,10 +786,7 @@ impl<'a> Watch<'a> {
                 .filter(|id| self.local(id) == Some(state))
                 .count()
         };
-        let untouched = ids
-            .iter()
-            .filter(|id| self.remote(id).is_none() && self.local(id).is_none())
-            .count();
+        let unsolved = ids.iter().filter(|id| self.local(id).is_none()).count();
         let entry = |symbol: String, count: usize, label: &str| format!("{symbol} {count} {label}");
         let remote = [
             entry(ring(Mark::Accepted), remote(Mark::Accepted), "accepted"),
@@ -775,7 +808,7 @@ impl<'a> Watch<'a> {
                 local(Local::NoSamples),
                 "no samples",
             ),
-            entry(EMPTY.dark_grey().to_string(), untouched, "untouched"),
+            entry(EMPTY.dark_grey().to_string(), unsolved, "no solution"),
         ];
         vec![
             format!("{} {}", "remote".bold(), remote.join("   ")),
@@ -800,26 +833,48 @@ impl<'a> Watch<'a> {
         attempts.last().map(|attempt| attempt.mark)
     }
 
-    // Bottom-up cells: the last attempts, then the local result on top.
+    // Looks at both sources, like the grid: a red ring or a red dot is a failure.
+    fn standing(&self, id: &ProblemId) -> Option<Standing> {
+        let remote = self.remote(id);
+        let local = self.local(id);
+        match (remote, local) {
+            (Some(Mark::Accepted), _) => Some(Standing::Solved),
+            (Some(Mark::Rejected | Mark::CompilationError), _) | (_, Some(Local::Fail)) => {
+                Some(Standing::Failed)
+            }
+            (None, None) => Some(Standing::Untouched),
+            _ => None,
+        }
+    }
+
+    // Bottom-up cells: the first row is always local, the solution's result or nothing there;
+    // above it the attempts newest first, so the mark for older hidden ones sits on top.
     // Rings are submissions and the filled circle is the local result, all nerd font glyphs.
     fn column(&self, id: &ProblemId) -> Vec<String> {
-        let mut cells = Vec::new();
+        let mut cells = vec![match self.local(id) {
+            Some(local) => self.local_cell(local),
+            None => EMPTY.dark_grey().to_string(),
+        }];
         let attempts = self.history.get(id).map_or(&[][..], Vec::as_slice);
-        for attempt in attempts {
+        for attempt in attempts.iter().rev().take(ATTEMPTS_SHOWN) {
             cells.push(ring(attempt.mark));
         }
-        if let Some(local) = self.local(id) {
-            cells.push(local_dot(local));
-        }
-        if cells.is_empty() {
-            cells.push(EMPTY.dark_grey().to_string());
-        }
-        // Five cells show; more get a mark on a row of its own above them.
-        if cells.len() > ATTEMPTS_SHOWN {
-            cells.drain(..cells.len() - ATTEMPTS_SHOWN);
+        if attempts.len() > ATTEMPTS_SHOWN {
             cells.push(MORE.dark_grey().to_string());
         }
         cells
+    }
+
+    // A running solution spins through a circle filling up.
+    fn local_cell(&self, local: Local) -> String {
+        match local {
+            Local::Running => {
+                let frame = self.started.elapsed().as_millis() / SPIN.as_millis();
+                let at = frame as usize % SPINNER.len();
+                SPINNER[at].dark_grey().to_string()
+            }
+            Local::Pass | Local::Fail | Local::NoSamples => local_dot(local),
+        }
     }
 
     fn relevant(&self, path: &Path) -> bool {
@@ -1401,7 +1456,7 @@ fn local_dot(local: Local) -> String {
     let dot = match local {
         Local::Pass => DOT.green(),
         Local::Fail => DOT.red(),
-        Local::Running => DOT.dark_grey(),
+        Local::Running => SPINNER[0].dark_grey(),
         Local::NoSamples => DOT.dim(),
     };
     dot.to_string()
