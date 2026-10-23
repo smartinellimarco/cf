@@ -50,10 +50,11 @@ pub enum Command {
     Start,
     Swap,
     Rerun,
+    Info,
     Quit,
 }
 
-const KEYS: [(&str, Command); 25] = [
+const KEYS: [(&str, Command); 26] = [
     ("l", Command::Next),
     ("h", Command::Prev),
     ("k", Command::Up),
@@ -78,6 +79,7 @@ const KEYS: [(&str, Command); 25] = [
     ("e", Command::Start),
     ("s", Command::Swap),
     ("r", Command::Rerun),
+    ("i", Command::Info),
     ("q", Command::Quit),
 ];
 

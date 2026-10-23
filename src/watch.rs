@@ -490,6 +490,8 @@ impl<'a> Watch<'a> {
             Command::Start => self.start(),
             Command::Swap => self.swap(),
             Command::Rerun => self.rerun(),
+            // A toggle that stays as left, so moving never reopens what you closed.
+            Command::Info => self.popup = !self.popup,
             Command::Quit => return Action::Quit,
         }
         Action::Continue
@@ -512,11 +514,9 @@ impl<'a> Watch<'a> {
     fn climb(&mut self, step: isize) {
         self.row = self.row.saturating_add_signed(step).min(self.rows());
         self.want = self.row;
-        self.popup = true;
     }
 
     fn go(&mut self, motion: Motion) {
-        self.popup = true;
         let from = self.current;
         let last = self.ids.len() - 1;
         let to = match motion {
@@ -1343,6 +1343,7 @@ impl<'a> Watch<'a> {
             (Command::Start, "start"),
             (Command::Swap, "swap"),
             (Command::Rerun, "rerun"),
+            (Command::Info, "info"),
             (Command::Quit, "quit"),
         ]));
         let motions = prompt(&entries(&[
