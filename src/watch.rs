@@ -122,8 +122,8 @@ enum Action {
     Quit,
 }
 
-// A grid column: its cells and whether it is the current problem.
-type Column = (Vec<String>, bool);
+// A grid column: its cells, whether it is the current problem, and how many solutions it has.
+type Column = (Vec<String>, bool, usize);
 
 // A verdict, plus the submission once it is final.
 type Update = (Verdict, Option<Submission>);
@@ -679,7 +679,8 @@ impl<'a> Watch<'a> {
         let per_band = (width / 2).clamp(1, COLUMNS_PER_BAND);
         let mut columns = Vec::new();
         for (at, id) in self.ids.iter().enumerate() {
-            columns.push((self.column(id), at == self.current));
+            let solutions = self.files.get(id).map_or(0, Vec::len);
+            columns.push((self.column(id), at == self.current, solutions));
         }
         // Fixed bands, so moving shifts the current mark and not the grid.
         let count = columns.len().div_ceil(per_band);
@@ -708,17 +709,21 @@ impl<'a> Watch<'a> {
                     _ => ("", "│"),
                 };
                 let mut line = format!("{} {} ", format!("{label:>5}").dim(), edge.dim());
-                for (cells, is_current) in chunk.iter() {
-                    // Every cell takes two columns: a glyph and its gap, or a spinner frame.
+                for (cells, is_current, solutions) in chunk.iter() {
+                    // Every cell takes two columns: a glyph and its gap. A local cell with more
+                    // than one solution puts their count in its gap, like 󰝥².
                     let cell = cells.get(row).map_or("", String::as_str);
-                    let gap = GAP.repeat(2usize.saturating_sub(visible(cell)));
+                    let gap = match superscript(*solutions) {
+                        Some(count) if row == 0 => count.dim().to_string(),
+                        _ => GAP.repeat(2 - visible(cell).min(1)),
+                    };
                     // The cursor's brackets take the gaps around its cell, so nothing shifts.
                     let cursor = *is_current && row == self.row && !cell.is_empty();
                     if cursor {
                         // Where the popup hangs: right after the closing bracket.
                         cursor_at = Some((band.len(), visible(&line) + 2));
                     }
-                    if cursor && !gap.is_empty() && (line.ends_with(' ') || line.ends_with(GAP)) {
+                    if cursor && (line.ends_with(' ') || line.ends_with(GAP)) {
                         line.pop();
                         let _ = write!(line, "{}{cell}{}", "[".bold(), "]".bold());
                     } else {
@@ -728,7 +733,7 @@ impl<'a> Watch<'a> {
                 band.push(line);
             }
             let mut base = format!("{} ", "      └".dim());
-            for (_, is_current) in chunk {
+            for (_, is_current, _) in chunk {
                 let mark = if *is_current {
                     "━".bold()
                 } else {
@@ -1464,6 +1469,12 @@ fn verdict_text(submission: &Submission) -> String {
         "COMPILATION_ERROR" | "TESTING" => words,
         _ => format!("{words} on test {}", submission.passed_test_count + 1),
     }
+}
+
+fn superscript(count: usize) -> Option<&'static str> {
+    ["²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"]
+        .get(count.checked_sub(2)?)
+        .copied()
 }
 
 fn ring(mark: Mark) -> String {
