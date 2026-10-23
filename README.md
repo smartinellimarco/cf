@@ -26,7 +26,7 @@ The first run writes the config to `~/.config/cf/` and asks for your Codeforces 
 - `cf -l <list>` walks a list from a file, a URL, stdin or `config.json`.
 - `cf -d <dir>` takes the solutions from `<dir>` instead of the current folder.
 - `cf 4A --lang python` starts solutions in another language than `default_lang`.
-- `cf sync` refreshes the problem set and your submissions.
+- `cf --no-cache` starts with an empty cache that goes away on exit, to try things from scratch.
 
 A list starts at its first problem you have not solved. Gym problems and anything outside the Codeforces problemset are left out.
 
