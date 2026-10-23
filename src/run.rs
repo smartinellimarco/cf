@@ -8,6 +8,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 
 use crate::config::{Lang, Paths, Quote};
 use crate::statement::Files;
@@ -17,6 +18,7 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(5);
 // A runaway print loop stops being read here and then hits the timeout.
 const OUTPUT_LIMIT: u64 = 16 << 20;
 
+#[derive(Serialize, Deserialize)]
 pub enum Outcome {
     Pass {
         elapsed: Duration,
@@ -33,6 +35,7 @@ pub enum Outcome {
     Timeout,
 }
 
+#[derive(Serialize, Deserialize)]
 pub enum Report {
     Building,
     Failed(String),

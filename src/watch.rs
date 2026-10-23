@@ -138,6 +138,8 @@ pub struct Watch<'a> {
     verdict: Verdict,
     updates: Option<Receiver<Update>>,
     stale: bool,
+    // r runs the samples again even when nothing changed.
+    rerun: bool,
     events: Receiver<DebounceEventResult>,
     debouncer: Debouncer<RecommendedWatcher>,
     watched: Vec<PathBuf>,
@@ -203,6 +205,7 @@ impl<'a> Watch<'a> {
             verdict: Verdict::Idle,
             updates: None,
             stale: false,
+            rerun: false,
             events,
             debouncer,
             watched: Vec::new(),
@@ -275,11 +278,26 @@ impl<'a> Watch<'a> {
                 && let Some(source) = self.source().cloned()
             {
                 self.stale = false;
-                self.report = Report::Building;
-                self.before = self.entries();
                 let job = self.job(self.id(), &source);
-                self.locals.insert(job.key.clone(), Local::Pending);
-                self.runner.first(job);
+                let hash = sweep::hash(&job.paths, &job.lang, &job.files).ok();
+                let stored = sweep::load(&self.results, &job.key)
+                    .filter(|stored| !self.rerun && Some(&stored.hash) == hash.as_ref());
+                self.rerun = false;
+                match stored {
+                    Some(stored) => {
+                        if let Some(passed) = sweep::passed(&stored.report) {
+                            let at = stored.at;
+                            self.locals.insert(job.key, Local::Ran { passed, at });
+                        }
+                        self.report = stored.report;
+                    }
+                    None => {
+                        self.report = Report::Building;
+                        self.before = self.entries();
+                        self.locals.insert(job.key.clone(), Local::Pending);
+                        self.runner.first(job);
+                    }
+                }
                 dirty = true;
             }
 
@@ -348,7 +366,10 @@ impl<'a> Watch<'a> {
                     cursor: self.current,
                 }
             }
-            ('r', View::Problem) => self.open(),
+            ('r', View::Problem) => {
+                self.rerun = true;
+                self.open();
+            }
             ('s', View::Problem) => self.swap(),
             _ => {}
         }
@@ -460,7 +481,6 @@ impl<'a> Watch<'a> {
     fn swap(&mut self) {
         let count = self.sources.get(self.id()).map_or(0, Vec::len);
         if count < 2 {
-            self.note = format!("{} has a single solution here", self.id());
             return;
         }
         let at = self.active.entry(self.id().clone()).or_insert(0);
@@ -490,11 +510,10 @@ impl<'a> Watch<'a> {
             let hash = sweep::hash(&job.paths, &job.lang, &job.files).ok();
             match sweep::load(&self.results, &job.key) {
                 Some(stored) if Some(&stored.hash) == hash.as_ref() => {
-                    let local = Local::Ran {
-                        passed: stored.passed,
-                        at: stored.at,
-                    };
-                    self.locals.insert(job.key, local);
+                    if let Some(passed) = sweep::passed(&stored.report) {
+                        let at = stored.at;
+                        self.locals.insert(job.key, Local::Ran { passed, at });
+                    }
                 }
                 _ => {
                     self.locals.insert(job.key.clone(), Local::Pending);
