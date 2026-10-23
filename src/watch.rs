@@ -722,18 +722,15 @@ impl<'a> Watch<'a> {
             lines.extend(band);
         }
         // The grid centers on its own width; the popup is then painted over it like a completion
-        // menu: next to the cursor, opening downwards, or upwards when it doesn't fit below.
+        // menu, next to the cursor.
         let widest = lines.iter().map(|line| visible(line)).max().unwrap_or(0);
         let pad = " ".repeat(width.saturating_sub(widest) / 2);
         let popup = self.popup_lines();
         if let Some((row, column)) = cursor
             && !popup.is_empty()
         {
-            let top = if row + popup.len() <= lines.len() {
-                row
-            } else {
-                (row + 1).saturating_sub(popup.len())
-            };
+            // Above the cursor, its bottom on the cursor's row, so the rows below stay readable.
+            let top = (row + 1).saturating_sub(popup.len());
             for (at, box_line) in popup.iter().enumerate() {
                 if let Some(line) = lines.get_mut(top + at) {
                     *line = overlay(line, column, box_line);
