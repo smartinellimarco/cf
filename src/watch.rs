@@ -1253,8 +1253,7 @@ impl<'a> Watch<'a> {
             Shown::FetchFailed(error) => {
                 return head(format!("{error}, press r to retry").red().to_string());
             }
-            // The line under the title already says how to start one.
-            Shown::NoSolution => return (Vec::new(), Vec::new()),
+            Shown::NoSolution => return head("No solution yet, e to start one".to_string()),
             Shown::Building => return head("Building…".to_string()),
             Shown::Done(stored) => &stored.report,
         };
@@ -1375,7 +1374,7 @@ impl<'a> Watch<'a> {
         lines.push(String::new());
         // The command to open the solution, with a background like inline code in markdown from
         // the terminal's own palette. Without a solution it would open an empty file, so the line
-        // says how to start one instead.
+        // shows the key that starts one instead.
         let shown = self.shown();
         let line = match self.source() {
             Some(_) => {
@@ -1385,10 +1384,9 @@ impl<'a> Watch<'a> {
             None => {
                 let file = shown.source.display();
                 let start = self.key(Command::Start).unwrap_or_default();
-                format!(
-                    "{} starts {file} with the statement on top",
-                    start.as_str().bold()
-                )
+                // The key drawn like a keycap, so it reads as something to press.
+                let keycap = format!(" {start} ").reverse().bold();
+                format!("{keycap} start {file}")
             }
         };
         lines.push(center(&line, width));
