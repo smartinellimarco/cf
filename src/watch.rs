@@ -108,9 +108,8 @@ enum Action {
     Quit,
 }
 
-// A grid column: its cells, whether it is the current problem, and whether it has several
-// solutions.
-type Column = (Vec<String>, bool, bool);
+// A grid column: its cells and whether it is the current problem.
+type Column = (Vec<String>, bool);
 
 // A verdict, plus the submission once it is final.
 type Update = (Verdict, Option<Submission>);
@@ -688,11 +687,7 @@ impl<'a> Watch<'a> {
         let per_band = (width / 2).clamp(1, COLUMNS_PER_BAND);
         let mut columns = Vec::new();
         for (at, id) in self.ids.iter().enumerate() {
-            let several = self
-                .sources
-                .get(id)
-                .is_some_and(|sources| sources.len() > 1);
-            columns.push((self.column(id), at == self.current, several));
+            columns.push((self.column(id), at == self.current));
         }
         // Fixed bands, so moving shifts the current mark and not the grid.
         let count = columns.len().div_ceil(per_band);
@@ -709,7 +704,7 @@ impl<'a> Watch<'a> {
             // Always the full height, so what comes below never moves.
             for row in (0..=ATTEMPTS_SHOWN + 1).rev() {
                 let mut line = String::new();
-                for (cells, _, _) in chunk {
+                for (cells, _) in chunk {
                     match cells.get(row) {
                         Some(cell) => line.push_str(cell),
                         None => line.push(' '),
@@ -718,14 +713,12 @@ impl<'a> Watch<'a> {
                 }
                 lines.push(line);
             }
-            // A cross on the baseline marks a problem with more than one solution to swap between.
             let mut base = String::new();
-            for (_, is_current, several) in chunk {
-                let mark = match (is_current, several) {
-                    (true, true) => "╋".bold(),
-                    (true, false) => "━".bold(),
-                    (false, true) => "┼".dim(),
-                    (false, false) => "─".dim(),
+            for (_, is_current) in chunk {
+                let mark = if *is_current {
+                    "━".bold()
+                } else {
+                    "─".dim()
                 };
                 let _ = write!(base, "{mark} ");
             }
