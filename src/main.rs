@@ -21,6 +21,7 @@ use clap::{Parser, Subcommand};
 
 use crate::codeforces::{Client, Handle, Problem, ProblemId, Refresh, Submission};
 use crate::config::{Config, Dirs};
+use crate::list::List;
 use crate::watch::{Setup, Watch};
 
 #[derive(Parser)]
@@ -31,12 +32,13 @@ use crate::watch::{Setup, Watch};
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
-    #[arg(help = "Problem id or link to open; defaults to your last submission")]
-    problem: Option<String>,
+    #[arg(help = "Problems to walk, as ids or links; defaults to the solutions in the folder")]
+    problems: Vec<String>,
     #[arg(
         short,
         long,
-        help = "List to walk: a file, a URL, - for stdin, or a name from config.json"
+        conflicts_with = "problems",
+        help = "List to walk: a file, a URL, - for stdin, a folder, or a name from config.json"
     )]
     list: Option<String>,
     #[arg(
@@ -122,6 +124,8 @@ fn unknown(ids: &[ProblemId], problems: &[Problem]) -> bool {
     false
 }
 
+// The list decides the columns; the folder fills in the local results and Codeforces the
+// submissions, wherever they meet.
 fn practice(client: &mut Client, dirs: &Dirs, config: Config, cli: Cli) -> Result<()> {
     if !cli.dir.is_dir() {
         bail!("{} is not a folder", cli.dir.display());
@@ -132,59 +136,65 @@ fn practice(client: &mut Client, dirs: &Dirs, config: Config, cli: Cli) -> Resul
     {
         bail!("--lang {lang} has no entry in langs in config.json");
     }
+    let folder = cli.list.is_none() && cli.problems.is_empty();
     let list = match &cli.list {
-        Some(source) => Some(list::resolve(client, &config, source)?),
-        None => None,
-    };
-    let start = match &cli.problem {
-        Some(text) => Some(problem_id(text)?),
-        None => None,
+        Some(source) => list::resolve(client, &config, source)?,
+        None if folder => {
+            let mut ids: Vec<ProblemId> = local::find(&root, &config).into_keys().collect();
+            ids.sort();
+            List {
+                source: root.display().to_string(),
+                ids,
+            }
+        }
+        None => {
+            let mut ids = Vec::new();
+            for text in &cli.problems {
+                let id = problem_id(text)?;
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            List {
+                source: "the command line".to_string(),
+                ids,
+            }
+        }
     };
 
     let mut problems = client.problems(Refresh::Cached)?;
-    let wanted = match &list {
-        Some(list) => list.ids.clone(),
-        None => start.iter().cloned().collect(),
-    };
     // A problem the API doesn't list would otherwise trigger a 2 MB download on every start.
-    if unknown(&wanted, &problems) && client.problems_age() > PROBLEMSET_MAX_AGE {
+    if unknown(&list.ids, &problems) && client.problems_age() > PROBLEMSET_MAX_AGE {
         problems = client.problems(Refresh::Fetch)?;
     }
     let known: HashSet<ProblemId> = problems.iter().filter_map(Problem::id).collect();
     let submissions = client.submissions(&config.handle)?;
 
     // Gym problems and anything the problemset doesn't have are left out.
-    let (ids, start) = match (&list, start) {
-        (Some(list), start) => {
-            let ids: Vec<ProblemId> = list
-                .ids
-                .iter()
-                .filter(|id| known.contains(id))
-                .cloned()
-                .collect();
-            if ids.is_empty() {
-                bail!("no problemset problems in {}", list.source);
-            }
-            if let Some(id) = &start
-                && !ids.contains(id)
-            {
-                bail!("{id} is not in {}", list.source);
-            }
-            (ids, start)
+    let ids: Vec<ProblemId> = list
+        .ids
+        .iter()
+        .filter(|id| known.contains(id))
+        .cloned()
+        .collect();
+    if ids.is_empty() {
+        if folder {
+            bail!(
+                "no solutions in {} yet, start one with `cf <problem>`",
+                list.source
+            );
         }
-        (None, Some(id)) if id.is_gym() => bail!("{id} is a gym problem, cf ignores those"),
-        (None, Some(id)) if !known.contains(&id) => {
-            bail!("{id} is not in the Codeforces problemset")
-        }
-        (None, start) => {
-            let anchor = start.unwrap_or_else(|| last_submitted(&submissions, &known));
-            (timeline(&known, &submissions, &anchor), Some(anchor))
-        }
+        bail!("no problemset problems in {}", list.source);
+    }
+    // In the folder, pick up where you last submitted.
+    let start = if folder {
+        last_submitted(&submissions, &ids)
+    } else {
+        None
     };
 
     let setup = Setup {
         root,
-        listed: list.is_some(),
         ids,
         start,
         lang: cli.lang,
@@ -194,19 +204,12 @@ fn practice(client: &mut Client, dirs: &Dirs, config: Config, cli: Cli) -> Resul
     Watch::new(client, config, dirs, setup)?.run()
 }
 
-// Submissions come newest first; with none to a problemset problem, start at the very first one.
-fn last_submitted(submissions: &[Submission], known: &HashSet<ProblemId>) -> ProblemId {
-    for submission in submissions {
-        if let Some(id) = submission.problem.id()
-            && known.contains(&id)
-        {
-            return id;
-        }
-    }
-    ProblemId {
-        contest: 1,
-        index: "A".to_string(),
-    }
+// Submissions come newest first.
+fn last_submitted(submissions: &[Submission], ids: &[ProblemId]) -> Option<ProblemId> {
+    submissions
+        .iter()
+        .filter_map(|submission| submission.problem.id())
+        .find(|id| ids.contains(id))
 }
 
 fn problem_id(text: &str) -> Result<ProblemId> {
@@ -214,23 +217,4 @@ fn problem_id(text: &str) -> Result<ProblemId> {
         [id] => Ok(id.clone()),
         _ => bail!("{text:?} is not a problem id like 4A or a problem link"),
     }
-}
-
-// Without a list: the problems you submitted to, then the problemset from where you start on.
-fn timeline(
-    known: &HashSet<ProblemId>,
-    submissions: &[Submission],
-    anchor: &ProblemId,
-) -> Vec<ProblemId> {
-    let mut ids: Vec<ProblemId> = known.iter().filter(|id| *id >= anchor).cloned().collect();
-    for submission in submissions {
-        if let Some(id) = submission.problem.id()
-            && known.contains(&id)
-        {
-            ids.push(id);
-        }
-    }
-    ids.sort();
-    ids.dedup();
-    ids
 }
