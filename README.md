@@ -20,7 +20,9 @@ cf 4A
 The first run writes the config to `~/.config/cf/` and asks for your Codeforces handle, which it checks against Codeforces before saving.
 
 - `cf` alone opens the problem of your last submission.
-- `cf <problem>` opens a problem by id or link and watches it. `n` walks the whole problemset from there, oldest contest first.
+- `cf <problem>` opens a problem by id or link and watches it.
+
+Without a list, `cf` walks a line in id order: the problems you submitted to, then the whole problemset from where you started. `p` goes back over what you did and `n` moves on.
 - `cf -l <list>` walks a list from its first problem you have not solved. Add a problem to open the list there.
 - `cf -d <dir>` takes the solutions from `<dir>` instead of the current folder.
 - `cf <problem> --lang python` starts a solution in another language than `default_lang`.
@@ -34,7 +36,7 @@ The samples live in the cache, under `~/.cache/cf/samples/<id>/` as `in<k>.txt` 
 
 `cf` prints the command to open the problem, built from `editor` in the config, e.g. `hx --vsplit {source} {samples}/in1.txt` or `vim -O {source} {samples}/in1.txt`.
 
-The progress grid has a column per problem with your submissions stacked upwards, the last five shown. A ring is a submission, of any language: green accepted, red rejected, gray compilation error, yellow still testing. A dot on top is the local result of the solution on screen when it is newer than your last submission: green when the samples pass, red when they fail, dim while they run. A cross on the baseline marks a problem with solutions in several languages, and `s` swaps between them. `cf` runs the samples of every solution in the background and reruns only what changed.
+The progress grid has a column per problem with your submissions stacked upwards, the last five shown. It counts solved over the list, or over the problems you tried when there is no list. A ring is a submission, of any language: green accepted, red rejected, gray compilation error, yellow still testing. A dot on top is the local result of the solution on screen when it is newer than your last submission: green when the samples pass, red when they fail, dim while they run. A cross on the baseline marks a problem with solutions in several languages, and `s` swaps between them. `cf` runs the samples of every solution in the background and reruns only what changed.
 
 Keys: `n`/`p` go to the next or previous problem, `gg`/`ge` to the first or last, `]f`/`[f` to the next or previous failed one, `]s`/`[s` solved, `]t`/`[t` untouched. `y` copies the file to submit, `o` opens the submit page, `l` lists the problems (the same motions move the cursor, `c` opens the one under it), `r` reruns, `s` swaps the solution, `q` quits.
 

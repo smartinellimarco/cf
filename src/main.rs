@@ -153,31 +153,37 @@ fn practice(client: &mut Client, dirs: &Dirs, config: Config, cli: Cli) -> Resul
     let submissions = client.submissions(&config.handle)?;
 
     // Gym problems and anything the problemset doesn't have are left out.
-    let ids: Vec<ProblemId> = match &list {
-        Some(list) => list
-            .ids
-            .iter()
-            .filter(|id| known.contains(id))
-            .cloned()
-            .collect(),
-        None => problemset(&problems),
-    };
-    if let Some(list) = &list
-        && ids.is_empty()
-    {
-        bail!("no problemset problems in {}", list.source);
-    }
-    let start = match (start, &list) {
-        (Some(id), _) if ids.contains(&id) => Some(id),
-        (Some(id), Some(list)) => bail!("{id} is not in {}", list.source),
-        (Some(id), None) if id.is_gym() => bail!("{id} is a gym problem, cf ignores those"),
-        (Some(id), None) => bail!("{id} is not in the Codeforces problemset"),
-        (None, Some(_)) => None,
-        (None, None) => Some(last_submitted(&submissions, &known)),
+    let (ids, start) = match (&list, start) {
+        (Some(list), start) => {
+            let ids: Vec<ProblemId> = list
+                .ids
+                .iter()
+                .filter(|id| known.contains(id))
+                .cloned()
+                .collect();
+            if ids.is_empty() {
+                bail!("no problemset problems in {}", list.source);
+            }
+            if let Some(id) = &start
+                && !ids.contains(id)
+            {
+                bail!("{id} is not in {}", list.source);
+            }
+            (ids, start)
+        }
+        (None, Some(id)) if id.is_gym() => bail!("{id} is a gym problem, cf ignores those"),
+        (None, Some(id)) if !known.contains(&id) => {
+            bail!("{id} is not in the Codeforces problemset")
+        }
+        (None, start) => {
+            let anchor = start.unwrap_or_else(|| last_submitted(&submissions, &known));
+            (timeline(&known, &submissions, &anchor), Some(anchor))
+        }
     };
 
     let setup = Setup {
         root,
+        listed: list.is_some(),
         ids,
         start,
         lang: cli.lang,
@@ -209,9 +215,20 @@ fn problem_id(text: &str) -> Result<ProblemId> {
     }
 }
 
-// The whole problemset, oldest contest first, for walking it without a list.
-fn problemset(problems: &[Problem]) -> Vec<ProblemId> {
-    let mut ids: Vec<ProblemId> = problems.iter().filter_map(Problem::id).collect();
+// Without a list: the problems you submitted to, then the problemset from where you start on.
+fn timeline(
+    known: &HashSet<ProblemId>,
+    submissions: &[Submission],
+    anchor: &ProblemId,
+) -> Vec<ProblemId> {
+    let mut ids: Vec<ProblemId> = known.iter().filter(|id| *id >= anchor).cloned().collect();
+    for submission in submissions {
+        if let Some(id) = submission.problem.id()
+            && known.contains(&id)
+        {
+            ids.push(id);
+        }
+    }
     ids.sort();
     ids.dedup();
     ids
