@@ -32,7 +32,7 @@ Each problem lives in `problems/<id>/`: `main.<ext>` with the statement as a com
 
 The progress grid has a column per problem with your attempts stacked upwards, the last five shown. A ring is a submission: green accepted, red rejected, gray compilation error, yellow still testing, filled when sent from `cf` while the samples passed. A dot on top is the local result newer than your last submission: green when the samples pass, red when they fail, dim while they run. `cf` runs the samples of every problem in the folder in the background and reruns only what changed.
 
-Keys: `y` copies the file to submit, `o` opens the submit page, `l` lists the problems, `n` jumps to the next unsolved one, `r` reruns, `q` quits.
+Keys: `n`/`p` go to the next or previous problem, `gg`/`ge` to the first or last, `]f`/`[f` to the next or previous failed one, `]s`/`[s` solved, `]t`/`[t` untouched. `y` copies the file to submit, `o` opens the submit page, `l` lists the problems (the same motions move the cursor, `c` opens the one under it), `r` reruns, `q` quits.
 
 ## Lists
 
