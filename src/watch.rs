@@ -25,9 +25,11 @@ const SLACK_SECONDS: i64 = 30;
 const OUTPUT_LINES: usize = 20;
 const NAME_WIDTH: usize = 40;
 const DOTS_PER_ROW: usize = 50;
+const PROGRESS_ROWS: usize = 4;
 const FLASH: Duration = Duration::from_secs(1);
 const COLUMN_MAX: usize = 40;
 
+#[derive(Clone, Copy)]
 enum Status {
     Solved,
     Tried,
@@ -87,7 +89,7 @@ pub struct Watch<'a> {
     config: Config,
     lang: Lang,
     ids: Vec<ProblemId>,
-    since: i64,
+    statuses: HashMap<ProblemId, Status>,
     catalog: HashMap<ProblemId, Problem>,
     submissions: Vec<Submission>,
     current: usize,
@@ -115,7 +117,7 @@ impl<'a> Watch<'a> {
         config: Config,
         dirs: &Dirs,
         ids: Vec<ProblemId>,
-        since: i64,
+        start: Option<ProblemId>,
         problems: Vec<Problem>,
         submissions: Vec<Submission>,
     ) -> Result<Watch<'a>> {
@@ -138,7 +140,7 @@ impl<'a> Watch<'a> {
             config,
             lang,
             ids,
-            since,
+            statuses: statuses(&submissions),
             catalog,
             submissions,
             current: 0,
@@ -159,11 +161,14 @@ impl<'a> Watch<'a> {
             strays: Vec::new(),
             files: Files::default(),
         };
-        watch.current = watch.next(0);
+        watch.current = match start.and_then(|id| watch.ids.iter().position(|at| *at == id)) {
+            Some(at) => at,
+            None => watch.next(0),
+        };
         Ok(watch)
     }
 
-    pub fn run(&mut self) -> Result<()> {
+    pub fn run(&mut self) -> Result<ProblemId> {
         let _screen = Screen::enter()?;
         self.open();
         let mut dirty = true;
@@ -178,7 +183,7 @@ impl<'a> Watch<'a> {
                     Event::Key(key) => {
                         if let KeyEventKind::Press = key.kind {
                             match self.press(key) {
-                                Action::Quit => return Ok(()),
+                                Action::Quit => return Ok(self.id().clone()),
                                 Action::Continue => dirty = true,
                             }
                         }
@@ -344,19 +349,10 @@ impl<'a> Watch<'a> {
         if id.is_gym() {
             return Status::Gym;
         }
-        let mut tried = false;
-        for submission in &self.submissions {
-            if submission.creation_time_seconds < self.since
-                || submission.problem.id().as_ref() != Some(id)
-            {
-                continue;
-            }
-            if submission.verdict.as_deref() == Some("OK") {
-                return Status::Solved;
-            }
-            tried = true;
+        match self.statuses.get(id) {
+            Some(status) => *status,
+            None => Status::Todo,
         }
-        if tried { Status::Tried } else { Status::Todo }
     }
 
     fn next(&self, from: usize) -> usize {
@@ -385,6 +381,7 @@ impl<'a> Watch<'a> {
         const PREFIX: &str = "Progress: ";
         let per_row = width.saturating_sub(PREFIX.len()).clamp(1, DOTS_PER_ROW);
         let mut dots = Vec::new();
+        let mut current = 0;
         for (at, id) in self.ids.iter().enumerate() {
             let dot = match self.status(id) {
                 Status::Solved => "●".green(),
@@ -393,14 +390,21 @@ impl<'a> Watch<'a> {
                 Status::Gym => continue,
             };
             let dot = if at == self.current {
+                current = dots.len();
                 dot.underlined().bold()
             } else {
                 dot
             };
             dots.push(dot.to_string());
         }
+        // The whole problemset is thousands of dots, so only the rows around the current one show.
+        let rows = dots.len().div_ceil(per_row);
+        let first = (current / per_row)
+            .saturating_sub(PROGRESS_ROWS / 2)
+            .min(rows.saturating_sub(PROGRESS_ROWS));
+        let shown = dots.chunks(per_row).skip(first).take(PROGRESS_ROWS);
         let mut out = String::new();
-        for (row, chunk) in dots.chunks(per_row).enumerate() {
+        for (row, chunk) in shown.enumerate() {
             let lead = if row == 0 {
                 PREFIX.to_string()
             } else {
@@ -586,6 +590,7 @@ impl<'a> Watch<'a> {
             self.verdict = verdict;
             self.submissions.extend(submission);
         }
+        self.statuses = statuses(&self.submissions);
         changed
     }
 
@@ -911,6 +916,24 @@ fn wrap(line: &str, width: usize) -> Vec<String> {
         column += 1;
     }
     rows
+}
+
+fn statuses(submissions: &[Submission]) -> HashMap<ProblemId, Status> {
+    let mut statuses = HashMap::new();
+    for submission in submissions {
+        let Some(id) = submission.problem.id() else {
+            continue;
+        };
+        let status = match submission.verdict.as_deref() {
+            Some("OK") => Status::Solved,
+            _ => Status::Tried,
+        };
+        let entry = statuses.entry(id).or_insert(status);
+        if let Status::Solved = status {
+            *entry = status;
+        }
+    }
+    statuses
 }
 
 // Runs on its own thread so a slow or missing connection never blocks the screen.

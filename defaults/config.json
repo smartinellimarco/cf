@@ -11,5 +11,22 @@
       "submit": "{source}",
       "judge": "GNU G++20"
     }
+  },
+  "lists": {
+    "a2oj-1200": "https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/11.%20Codeforces%20Rating%20%3C%201300/README.md",
+    "a2oj-1300": "https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/12.%201300%20%3C%3D%20Codeforces%20Rating%20%3C%3D%201399/README.md",
+    "a2oj-1400": "https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/13.%201400%20%3C%3D%20Codeforces%20Rating%20%3C%3D%201499/README.md",
+    "a2oj-1500": "https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/14.%201500%20%3C%3D%20Codeforces%20Rating%20%3C%3D%201599/README.md",
+    "a2oj-1600": "https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/15.%201600%20%3C%3D%20Codeforces%20Rating%20%3C%3D%201699/README.md",
+    "a2oj-1700": "https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/16.%201700%20%3C%3D%20Codeforces%20Rating%20%3C%3D%201799/README.md",
+    "a2oj-1800": "https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/17.%201800%20%3C%3D%20Codeforces%20Rating%20%3C%3D%201899/README.md",
+    "a2oj-1900": "https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/18.%201900%20%3C%3D%20Codeforces%20Rating%20%3C%3D%201999/README.md",
+    "div2a": "https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/div2A.md",
+    "div2b": "https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/div2B.md",
+    "div2c": "https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/div2C.md",
+    "div2d": "https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/div2D.md",
+    "div2e": "https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/div2E.md",
+    "dp": "https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/dynamicProgramming.md",
+    "strings": "https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/strings.md"
   }
 }

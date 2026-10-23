@@ -5,9 +5,11 @@ use std::str::FromStr;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::de::{self, DeserializeOwned};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use ureq::Agent;
+
+use crate::list::List;
 
 // The API allows one call every two seconds.
 const API_INTERVAL: Duration = Duration::from_secs(2);
@@ -22,7 +24,7 @@ impl fmt::Display for Handle {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct ProblemId {
     pub contest: u32,
     pub index: String,
@@ -60,6 +62,20 @@ impl FromStr for ProblemId {
             contest,
             index: index.to_string(),
         })
+    }
+}
+
+impl Serialize for ProblemId {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for ProblemId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<ProblemId, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        text.parse()
+            .map_err(|()| de::Error::custom(format!("{text:?} is not a problem id")))
     }
 }
 
@@ -130,8 +146,14 @@ struct Problemset {
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct State {
-    pub last: HashMap<PathBuf, PathBuf>,
-    pub fresh: HashMap<PathBuf, i64>,
+    pub last: HashMap<PathBuf, Last>,
+}
+
+// What a solutions folder had open when cf quit, so `cf` alone reopens it.
+#[derive(Serialize, Deserialize)]
+pub struct Last {
+    pub list: Option<List>,
+    pub problem: ProblemId,
 }
 
 pub enum Refresh {
