@@ -38,7 +38,7 @@ The samples live in the cache, under `~/.cache/cf/samples/<id>/` as `in<k>.txt` 
 
 The progress grid has a column per problem with your submissions stacked upwards, the last five shown and a mark above when there are more. It counts solved over the list, or over the problems you tried when there is no list. A ring is a submission, of any language: green accepted, red rejected, gray compilation error, yellow still testing. A filled circle on top is the local result of the solution on screen when it is newer than your last submission: green when the samples pass, red when they fail, gray while they run. A cross on the baseline marks a problem with solutions in several languages, and `s` swaps between them. `cf` runs the samples of every solution in the background and reruns only what changed. The grid and the language icons are [Nerd Fonts](https://www.nerdfonts.com/) glyphs, in your terminal's colors.
 
-Keys: `n`/`p` go to the next or previous problem, `gg`/`ge` to the first or last, `]f`/`[f` to the next or previous failed one, `]s`/`[s` solved, `]t`/`[t` untouched. `y` copies the file to submit, `o` opens the submit page, `l` lists the problems (the same motions move the cursor, `c` opens the one under it), `r` reruns, `s` swaps the solution, `e` starts one, `q` quits.
+Keys: `n`/`p` go to the next or previous problem, `gg`/`ge` to the first or last, `]f`/`[f` to the next or previous failed one, `]s`/`[s` solved, `]t`/`[t` untouched. `y` copies the file to submit, `o` opens the submit page, `w` opens the problem on Codeforces, `l` lists the problems (the same motions move the cursor, `c` opens the one under it), `r` reruns, `s` swaps the solution, `e` starts one, `q` quits.
 
 ## Lists
 
