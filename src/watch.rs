@@ -722,12 +722,15 @@ impl<'a> Watch<'a> {
             let mut band = Vec::new();
             // Always the full height, so what comes below never moves.
             for row in (0..=ATTEMPTS_SHOWN + 1).rev() {
-                let label = match row {
-                    0 => "local",
-                    1 => "cf",
-                    _ => "",
+                // Two brackets with their tips toward the cells: cf's rows, then local's row that
+                // closes on the baseline.
+                let (label, edge) = match row {
+                    0 => ("local", "┌"),
+                    1 => ("cf", "└"),
+                    _ if row == ATTEMPTS_SHOWN + 1 => ("", "┌"),
+                    _ => ("", "│"),
                 };
-                let mut line = format!("{} {} ", format!("{label:>5}").dim(), "│".dim());
+                let mut line = format!("{} {} ", format!("{label:>5}").dim(), edge.dim());
                 for (cells, is_current) in chunk {
                     // Every cell takes two columns: a glyph and its gap, or a spinner frame.
                     let cell = cells.get(row).map_or("", String::as_str);
@@ -1236,17 +1239,14 @@ impl<'a> Watch<'a> {
                     ),
                 };
                 let mut line = format!("Sample {k} ✗ {what}").red().to_string();
+                // How many more samples fail besides the one shown.
+                if !rest.is_empty() {
+                    let _ = write!(line, " {}", format!("+{}", rest.len()).red().bold());
+                }
                 if let Some(usage) = first.usage() {
                     let _ = write!(line, "  {}", numbers(usage).dim());
                 }
                 lines.push(line);
-                if !rest.is_empty() {
-                    lines.push(
-                        format!("also failing: {}", rest.join(", "))
-                            .red()
-                            .to_string(),
-                    );
-                }
                 (lines, details)
             }
         }
@@ -1420,10 +1420,11 @@ fn diff(expected: &str, got: &str) -> Vec<String> {
 
 // Like the judge shows them: 46 ms · 3.2 MB.
 fn numbers(usage: Usage) -> String {
+    // Fixed widths so the line doesn't shift as the numbers grow; runs stop at 5 s anyway.
     format!(
-        "{} ms · {:.1} MB",
-        usage.elapsed.as_millis(),
-        usage.memory as f64 / 1e6
+        "{:>4} ms · {:>5.1} MB",
+        usage.elapsed.as_millis().min(9999),
+        (usage.memory as f64 / 1e6).min(999.9)
     )
 }
 
