@@ -8,19 +8,21 @@ use std::thread::JoinHandle;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::codeforces::{self, ProblemId};
+use crate::codeforces;
 use crate::config::{Lang, Paths};
 use crate::run::{self, Outcome, Report};
 use crate::statement::Files;
 
+// `key` names the source file, like 4A.cpp, so two implementations of a problem never collide.
 pub struct Job {
-    pub id: ProblemId,
+    pub key: String,
     pub paths: Paths,
     pub files: Files,
+    pub lang: Lang,
 }
 
 pub struct Done {
-    pub id: ProblemId,
+    pub key: String,
     pub report: Report,
 }
 
@@ -35,7 +37,7 @@ pub struct Stored {
 #[derive(Default)]
 struct Queue {
     jobs: VecDeque<Job>,
-    running: HashMap<ProblemId, Arc<AtomicBool>>,
+    running: HashMap<String, Arc<AtomicBool>>,
     stopped: bool,
 }
 
@@ -48,7 +50,7 @@ pub struct Runner {
 }
 
 impl Runner {
-    pub fn new(lang: &Lang, results: PathBuf) -> Runner {
+    pub fn new(results: PathBuf) -> Runner {
         let shared: Shared = Arc::default();
         let (sender, done) = mpsc::channel();
         // One core stays free for the editor and the screen.
@@ -58,11 +60,10 @@ impl Runner {
         let mut workers = Vec::new();
         for _ in 0..count {
             let shared = shared.clone();
-            let lang = lang.clone();
             let results = results.clone();
             let sender = sender.clone();
             workers.push(std::thread::spawn(move || {
-                work(&shared, &lang, &results, &sender);
+                work(&shared, &results, &sender);
             }));
         }
         Runner {
@@ -83,10 +84,10 @@ impl Runner {
     pub fn first(&self, job: Job) {
         let (queue, wake) = &*self.shared;
         let mut queue = queue.lock().unwrap();
-        if let Some(cancel) = queue.running.get(&job.id) {
+        if let Some(cancel) = queue.running.get(&job.key) {
             cancel.store(true, Ordering::Relaxed);
         }
-        queue.jobs.retain(|queued| queued.id != job.id);
+        queue.jobs.retain(|queued| queued.key != job.key);
         queue.jobs.push_front(job);
         wake.notify_all();
     }
@@ -110,7 +111,7 @@ impl Drop for Runner {
     }
 }
 
-fn work(shared: &Shared, lang: &Lang, results: &Path, done: &Sender<Done>) {
+fn work(shared: &Shared, results: &Path, done: &Sender<Done>) {
     let (queue, wake) = &**shared;
     loop {
         let (job, cancel) = {
@@ -122,25 +123,25 @@ fn work(shared: &Shared, lang: &Lang, results: &Path, done: &Sender<Done>) {
                 let free = queue
                     .jobs
                     .iter()
-                    .position(|job| !queue.running.contains_key(&job.id));
+                    .position(|job| !queue.running.contains_key(&job.key));
                 if let Some(at) = free {
                     let job = queue.jobs.remove(at).unwrap();
                     let cancel = Arc::new(AtomicBool::new(false));
-                    queue.running.insert(job.id.clone(), cancel.clone());
+                    queue.running.insert(job.key.clone(), cancel.clone());
                     break (job, cancel);
                 }
                 queue = wake.wait(queue).unwrap();
             }
         };
 
-        let hash = hash(&job.paths, lang, &job.files);
-        let report = match run::check(&job.paths, lang, &job.files, &cancel) {
+        let hash = hash(&job.paths, &job.lang, &job.files);
+        let report = match run::check(&job.paths, &job.lang, &job.files, &cancel) {
             Ok(report) => report,
             Err(error) => Report::Failed(format!("{error:#}")),
         };
         {
             let mut queue = queue.lock().unwrap();
-            queue.running.remove(&job.id);
+            queue.running.remove(&job.key);
             wake.notify_all();
         }
         if cancel.load(Ordering::Relaxed) {
@@ -148,9 +149,12 @@ fn work(shared: &Shared, lang: &Lang, results: &Path, done: &Sender<Done>) {
         }
         if let (Ok(hash), Some(passed)) = (hash, passed(&report)) {
             let at = codeforces::now();
-            let _ = save(results, &job.id, &Stored { hash, passed, at });
+            let _ = save(results, &job.key, &Stored { hash, passed, at });
         }
-        let _ = done.send(Done { id: job.id, report });
+        let _ = done.send(Done {
+            key: job.key,
+            report,
+        });
     }
 }
 
@@ -179,22 +183,22 @@ pub fn hash(paths: &Paths, lang: &Lang, files: &Files) -> Result<String> {
     part(files.input.as_deref().unwrap_or_default().as_bytes());
     part(files.output.as_deref().unwrap_or_default().as_bytes());
     part(&std::fs::read(&paths.source)?);
-    for k in run::samples(&paths.dir)? {
-        part(&std::fs::read(paths.dir.join(format!("in{k}.txt")))?);
-        part(&std::fs::read(paths.dir.join(format!("ans{k}.txt")))?);
+    for k in run::samples(&paths.samples)? {
+        part(&std::fs::read(paths.samples.join(format!("in{k}.txt")))?);
+        part(&std::fs::read(paths.samples.join(format!("ans{k}.txt")))?);
     }
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-pub fn load(results: &Path, id: &ProblemId) -> Option<Stored> {
-    let json = std::fs::read_to_string(results.join(format!("{id}.json"))).ok()?;
+pub fn load(results: &Path, key: &str) -> Option<Stored> {
+    let json = std::fs::read_to_string(results.join(format!("{key}.json"))).ok()?;
     serde_json::from_str(&json).ok()
 }
 
-fn save(results: &Path, id: &ProblemId, result: &Stored) -> Result<()> {
+fn save(results: &Path, key: &str, result: &Stored) -> Result<()> {
     std::fs::create_dir_all(results)?;
     std::fs::write(
-        results.join(format!("{id}.json")),
+        results.join(format!("{key}.json")),
         serde_json::to_string(result)?,
     )?;
     Ok(())

@@ -1,6 +1,7 @@
 mod codeforces;
 mod config;
 mod list;
+mod local;
 mod run;
 mod statement;
 mod sweep;
@@ -11,14 +12,15 @@ use std::process::ExitCode;
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 
-use crate::codeforces::{Client, Handle, Last, Problem, ProblemId, Refresh};
+use crate::codeforces::{Client, Handle, Problem, ProblemId, Refresh, Submission};
 use crate::config::{Config, Dirs};
-use crate::watch::Watch;
+use crate::watch::{Setup, Watch};
 
 #[derive(Parser)]
 #[command(
@@ -28,7 +30,7 @@ use crate::watch::Watch;
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
-    #[arg(help = "Problem id or link to open; defaults to what was open last")]
+    #[arg(help = "Problem id or link to open; defaults to your last submission")]
     problem: Option<String>,
     #[arg(
         short,
@@ -36,6 +38,15 @@ struct Cli {
         help = "List to walk: a file, a URL, - for stdin, or a name from config.json"
     )]
     list: Option<String>,
+    #[arg(
+        short,
+        long,
+        default_value = ".",
+        help = "Folder with your solutions, where new ones are created"
+    )]
+    dir: PathBuf,
+    #[arg(long, help = "Language for new solutions, instead of default_lang")]
+    lang: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -66,19 +77,13 @@ fn start(cli: Cli) -> Result<()> {
         client.check_handle(&handle)?;
         config.save_handle(&dirs, handle)?;
     }
-    match cli.command {
+    match &cli.command {
         Some(Command::Sync) => {
             client.problems(Refresh::Fetch)?;
             client.submissions(&config.handle)?;
             Ok(())
         }
-        None => practice(
-            &mut client,
-            &dirs,
-            config,
-            cli.problem.as_deref(),
-            cli.list.as_deref(),
-        ),
+        None => practice(&mut client, &dirs, config, cli),
     }
 }
 
@@ -116,31 +121,24 @@ fn unknown(ids: &[ProblemId], problems: &[Problem]) -> bool {
     false
 }
 
-fn practice(
-    client: &mut Client,
-    dirs: &Dirs,
-    config: Config,
-    problem: Option<&str>,
-    list: Option<&str>,
-) -> Result<()> {
-    let mut state = client.state();
-    let folder = std::env::current_dir()?;
-    let last = state.last.remove(&folder);
-    let (list, mut start) = match (list, problem, last) {
-        (Some(source), _, _) => (Some(list::resolve(client, &config.lists, source)?), None),
-        (None, Some(_), _) => (None, None),
-        (None, None, Some(Last { list, problem })) => {
-            let list = match list {
-                Some(list) => Some(list::reload(&config.lists, list)?),
-                None => None,
-            };
-            (list, Some(problem))
-        }
-        (None, None, None) => bail!("nothing open yet, run `cf <problem>` or `cf -l <list>`"),
-    };
-    if let Some(text) = problem {
-        start = Some(problem_id(text)?);
+fn practice(client: &mut Client, dirs: &Dirs, config: Config, cli: Cli) -> Result<()> {
+    if !cli.dir.is_dir() {
+        bail!("{} is not a folder", cli.dir.display());
     }
+    let root = std::fs::canonicalize(&cli.dir)?;
+    if let Some(lang) = &cli.lang
+        && !config.langs.contains_key(lang)
+    {
+        bail!("--lang {lang} has no entry in langs in config.json");
+    }
+    let list = match &cli.list {
+        Some(source) => Some(list::resolve(client, &config, source)?),
+        None => None,
+    };
+    let start = match &cli.problem {
+        Some(text) => Some(problem_id(text)?),
+        None => None,
+    };
 
     let mut problems = client.problems(Refresh::Cached)?;
     let wanted = match &list {
@@ -151,29 +149,57 @@ fn practice(
     if unknown(&wanted, &problems) && client.problems_age() > PROBLEMSET_MAX_AGE {
         problems = client.problems(Refresh::Fetch)?;
     }
-    let ids = match &list {
-        Some(list) => list.ids.clone(),
+    let known: HashSet<ProblemId> = problems.iter().filter_map(Problem::id).collect();
+    let submissions = client.submissions(&config.handle)?;
+
+    // Gym problems and anything the problemset doesn't have are left out.
+    let ids: Vec<ProblemId> = match &list {
+        Some(list) => list
+            .ids
+            .iter()
+            .filter(|id| known.contains(id))
+            .cloned()
+            .collect(),
         None => problemset(&problems),
     };
-    if let Some(id) = &start
-        && !ids.contains(id)
+    if let Some(list) = &list
+        && ids.is_empty()
     {
-        match (&list, problem) {
-            (Some(list), Some(_)) => bail!("{id} is not in {}", list.source),
-            (None, _) if id.is_gym() => {
-                bail!("{id} is a gym problem, cf only opens problemset problems")
-            }
-            (None, _) => bail!("{id} is not in the Codeforces problemset"),
-            // The list changed since cf last had it open.
-            (Some(_), None) => start = None,
+        bail!("no problemset problems in {}", list.source);
+    }
+    let start = match (start, &list) {
+        (Some(id), _) if ids.contains(&id) => Some(id),
+        (Some(id), Some(list)) => bail!("{id} is not in {}", list.source),
+        (Some(id), None) if id.is_gym() => bail!("{id} is a gym problem, cf ignores those"),
+        (Some(id), None) => bail!("{id} is not in the Codeforces problemset"),
+        (None, Some(_)) => None,
+        (None, None) => Some(last_submitted(&submissions, &known)),
+    };
+
+    let setup = Setup {
+        root,
+        ids,
+        start,
+        lang: cli.lang,
+        problems,
+        submissions,
+    };
+    Watch::new(client, config, dirs, setup)?.run()
+}
+
+// Submissions come newest first; with none to a problemset problem, start at the very first one.
+fn last_submitted(submissions: &[Submission], known: &HashSet<ProblemId>) -> ProblemId {
+    for submission in submissions {
+        if let Some(id) = submission.problem.id()
+            && known.contains(&id)
+        {
+            return id;
         }
     }
-
-    let submissions = client.submissions(&config.handle)?;
-    let mut watch = Watch::new(client, config, dirs, ids, start, problems, submissions)?;
-    let problem = watch.run()?;
-    state.last.insert(folder, Last { list, problem });
-    client.save_state(&state)
+    ProblemId {
+        contest: 1,
+        index: "A".to_string(),
+    }
 }
 
 fn problem_id(text: &str) -> Result<ProblemId> {

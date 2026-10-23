@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -14,6 +14,7 @@ use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
 
 use crate::codeforces::{self, Client, Handle, Page, Problem, ProblemId, Submission};
 use crate::config::{Config, Dirs, Lang, Paths, Quote};
+use crate::local;
 use crate::run::{Outcome, Report};
 use crate::statement::{self, Files, Kind, Statement};
 use crate::sweep::{self, Done, Job, Runner};
@@ -28,8 +29,6 @@ const NAME_WIDTH: usize = 40;
 const COLUMNS_PER_BAND: usize = 50;
 const BANDS_SHOWN: usize = 2;
 const ATTEMPTS_SHOWN: usize = 5;
-// Ids of the submissions sent from cf while the samples passed.
-const PASSING: &str = "passing.json";
 const FLASH: Duration = Duration::from_secs(1);
 const COLUMN_MAX: usize = 40;
 
@@ -38,7 +37,6 @@ enum Status {
     Solved,
     Tried,
     Todo,
-    Gym,
 }
 
 enum Local {
@@ -57,8 +55,6 @@ enum Mark {
 struct Attempt {
     mark: Mark,
     at: i64,
-    // Sent from cf while the samples passed.
-    passing: bool,
 }
 
 enum Motion {
@@ -116,14 +112,21 @@ impl Drop for Screen {
     }
 }
 
+pub struct Setup {
+    pub root: PathBuf,
+    pub ids: Vec<ProblemId>,
+    pub start: Option<ProblemId>,
+    // Language for new files instead of default_lang, from --lang.
+    pub lang: Option<String>,
+    pub problems: Vec<Problem>,
+    pub submissions: Vec<Submission>,
+}
+
 pub struct Watch<'a> {
     client: &'a mut Client,
     config: Config,
-    lang: Lang,
     ids: Vec<ProblemId>,
     history: HashMap<ProblemId, Vec<Attempt>>,
-    passing: HashSet<u64>,
-    sending: bool,
     prefix: Option<char>,
     catalog: HashMap<ProblemId, Problem>,
     submissions: Vec<Submission>,
@@ -137,16 +140,21 @@ pub struct Watch<'a> {
     stale: bool,
     events: Receiver<DebounceEventResult>,
     debouncer: Debouncer<RecommendedWatcher>,
-    watched: Option<PathBuf>,
+    watched: Vec<PathBuf>,
     clipboard: Option<arboard::Clipboard>,
     root: PathBuf,
     templates: PathBuf,
+    samples: PathBuf,
     builds: PathBuf,
     strays: Vec<String>,
     before: Vec<String>,
     files: Files,
     runner: Runner,
-    locals: HashMap<ProblemId, Local>,
+    // Local implementations per problem, newest first, and which one is on screen.
+    sources: HashMap<ProblemId, Vec<PathBuf>>,
+    active: HashMap<ProblemId, usize>,
+    lang: Option<String>,
+    locals: HashMap<String, Local>,
     results: PathBuf,
 }
 
@@ -155,11 +163,16 @@ impl<'a> Watch<'a> {
         client: &'a mut Client,
         config: Config,
         dirs: &Dirs,
-        ids: Vec<ProblemId>,
-        start: Option<ProblemId>,
-        problems: Vec<Problem>,
-        submissions: Vec<Submission>,
+        setup: Setup,
     ) -> Result<Watch<'a>> {
+        let Setup {
+            root,
+            ids,
+            start,
+            lang,
+            problems,
+            submissions,
+        } = setup;
         let mut catalog = HashMap::new();
         for problem in problems {
             let Some(id) = problem.id() else {
@@ -172,18 +185,13 @@ impl<'a> Watch<'a> {
             let _ = sender.send(result);
         })
         .context("starting the file watcher")?;
-        let lang = config.lang().clone();
-        let root = std::env::current_dir()?;
         let results = dirs.results(&root);
-        let runner = Runner::new(&lang, results.clone());
+        let sources = local::find(&root, &config);
         let mut watch = Watch {
             client,
+            history: history(&submissions),
             config,
-            lang,
             ids,
-            history: HashMap::new(),
-            passing: HashSet::new(),
-            sending: false,
             prefix: None,
             catalog,
             submissions,
@@ -197,20 +205,22 @@ impl<'a> Watch<'a> {
             stale: false,
             events,
             debouncer,
-            watched: None,
+            watched: Vec::new(),
             clipboard: None,
             templates: dirs.templates(),
+            samples: dirs.samples(),
             builds: dirs.builds(&root),
             root,
             strays: Vec::new(),
             before: Vec::new(),
             files: Files::default(),
-            runner,
+            runner: Runner::new(results.clone()),
+            sources,
+            active: HashMap::new(),
+            lang,
             locals: HashMap::new(),
             results,
         };
-        watch.passing = watch.client.load(PASSING).unwrap_or_default();
-        watch.history = history(&watch.submissions, &watch.passing);
         watch.current = match start.and_then(|id| watch.ids.iter().position(|at| *at == id)) {
             Some(at) => at,
             None => watch.next(0),
@@ -218,7 +228,7 @@ impl<'a> Watch<'a> {
         Ok(watch)
     }
 
-    pub fn run(&mut self) -> Result<ProblemId> {
+    pub fn run(&mut self) -> Result<()> {
         let _screen = Screen::enter()?;
         self.open();
         self.sweep();
@@ -234,7 +244,7 @@ impl<'a> Watch<'a> {
                     Event::Key(key) => {
                         if let KeyEventKind::Press = key.kind {
                             match self.press(key) {
-                                Action::Quit => return Ok(self.id().clone()),
+                                Action::Quit => return Ok(()),
                                 Action::Continue => dirty = true,
                             }
                         }
@@ -261,16 +271,15 @@ impl<'a> Watch<'a> {
                 }
             }
 
-            if self.stale {
+            if self.stale
+                && let Some(source) = self.source().cloned()
+            {
                 self.stale = false;
                 self.report = Report::Building;
                 self.before = self.entries();
-                self.locals.insert(self.id().clone(), Local::Pending);
-                self.runner.first(Job {
-                    id: self.id().clone(),
-                    paths: self.paths(),
-                    files: self.files.clone(),
-                });
+                let job = self.job(self.id(), &source);
+                self.locals.insert(job.key.clone(), Local::Pending);
+                self.runner.first(job);
                 dirty = true;
             }
 
@@ -340,6 +349,7 @@ impl<'a> Watch<'a> {
                 }
             }
             ('r', View::Problem) => self.open(),
+            ('s', View::Problem) => self.swap(),
             _ => {}
         }
         Action::Continue
@@ -409,62 +419,86 @@ impl<'a> Watch<'a> {
         &self.ids[self.current]
     }
 
-    fn dir(&self) -> PathBuf {
-        PathBuf::from("problems").join(self.id().to_string())
+    fn source(&self) -> Option<&PathBuf> {
+        self.source_of(self.id())
     }
 
-    fn paths(&self) -> Paths {
-        self.paths_of(self.id())
+    fn source_of(&self, id: &ProblemId) -> Option<&PathBuf> {
+        let at = self.active.get(id).copied().unwrap_or(0);
+        self.sources.get(id)?.get(at)
     }
 
-    fn paths_of(&self, id: &ProblemId) -> Paths {
-        let dir = self.root.join("problems").join(id.to_string());
+    fn lang(&self, source: &Path) -> Lang {
+        // Every source was found or created through a lang, so the lookup can't miss.
+        self.config.lang_of(source).cloned().unwrap()
+    }
+
+    fn paths(&self, id: &ProblemId, source: &Path) -> Paths {
         Paths {
-            source: dir.join(self.source()),
-            build: self.builds.join(id.to_string()),
-            dir,
+            source: source.to_path_buf(),
+            samples: self.samples.join(id.to_string()),
+            build: self.builds.join(key(source)),
         }
     }
 
-    // Runs the samples of every other problem with code here, so the list shows how each stands.
-    fn sweep(&mut self) {
-        let Ok(entries) = std::fs::read_dir(self.root.join("problems")) else {
-            return;
+    fn job(&self, id: &ProblemId, source: &Path) -> Job {
+        let files = if id == self.id() {
+            self.files.clone()
+        } else {
+            self.client
+                .load(&format!("statements/{id}.json"))
+                .unwrap_or_default()
         };
-        let mut ids = Vec::new();
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(Ok(id)) = name.to_str().map(str::parse::<ProblemId>) else {
-                continue;
-            };
-            if id != *self.id() && self.paths_of(&id).source.is_file() {
-                ids.push(id);
+        Job {
+            key: key(source),
+            paths: self.paths(id, source),
+            files,
+            lang: self.lang(source),
+        }
+    }
+
+    fn swap(&mut self) {
+        let count = self.sources.get(self.id()).map_or(0, Vec::len);
+        if count < 2 {
+            self.note = format!("{} has a single solution here", self.id());
+            return;
+        }
+        let at = self.active.entry(self.id().clone()).or_insert(0);
+        *at = (*at + 1) % count;
+        self.open();
+    }
+
+    // Runs the samples of every other local solution, so the grid shows how each stands.
+    fn sweep(&mut self) {
+        let current = self.source().cloned();
+        let mut pending = Vec::new();
+        for (id, sources) in &self.sources {
+            for source in sources {
+                if Some(source) != current.as_ref() {
+                    pending.push((id.clone(), source.clone()));
+                }
             }
         }
         // Nearest to the current problem first, problems outside the list last.
-        ids.sort_by_key(|id| match self.ids.iter().position(|at| at == id) {
+        pending.sort_by_key(|(id, _)| match self.ids.iter().position(|at| at == id) {
             Some(at) => at.abs_diff(self.current),
             None => usize::MAX,
         });
         let mut jobs = Vec::new();
-        for id in ids {
-            let paths = self.paths_of(&id);
-            let files: Files = self
-                .client
-                .load(&format!("statements/{id}.json"))
-                .unwrap_or_default();
-            let hash = sweep::hash(&paths, &self.lang, &files).ok();
-            match sweep::load(&self.results, &id) {
+        for (id, source) in pending {
+            let job = self.job(&id, &source);
+            let hash = sweep::hash(&job.paths, &job.lang, &job.files).ok();
+            match sweep::load(&self.results, &job.key) {
                 Some(stored) if Some(&stored.hash) == hash.as_ref() => {
                     let local = Local::Ran {
                         passed: stored.passed,
                         at: stored.at,
                     };
-                    self.locals.insert(id, local);
+                    self.locals.insert(job.key, local);
                 }
                 _ => {
-                    self.locals.insert(id.clone(), Local::Pending);
-                    jobs.push(Job { id, paths, files });
+                    self.locals.insert(job.key.clone(), Local::Pending);
+                    jobs.push(job);
                 }
             }
         }
@@ -476,29 +510,34 @@ impl<'a> Watch<'a> {
             Some(passed) => {
                 let at = codeforces::now();
                 self.locals
-                    .insert(done.id.clone(), Local::Ran { passed, at })
+                    .insert(done.key.clone(), Local::Ran { passed, at })
             }
-            None => self.locals.remove(&done.id),
+            None => self.locals.remove(&done.key),
         };
-        if done.id == *self.id() {
+        if self.source().is_some_and(|source| key(source) == done.key) {
             self.report = done.report;
             self.strays = self.strays(&self.before);
         }
     }
 
-    // Relative to the solutions folder, for paths shown on screen.
-    fn shown(&self) -> Paths {
-        let dir = self.dir();
-        Paths {
-            source: dir.join(self.source()),
-            build: self.builds.join(self.id().to_string()),
-            dir,
+    // The source relative to where cf runs, for the commands shown on screen.
+    fn shown(&self) -> Option<Paths> {
+        let source = self.source()?;
+        let mut paths = self.paths(self.id(), source);
+        if let Ok(cwd) = std::env::current_dir()
+            && let Ok(relative) = source.strip_prefix(&cwd)
+        {
+            paths.source = relative.to_path_buf();
         }
+        Some(paths)
     }
 
     fn entries(&self) -> Vec<String> {
         let mut names = Vec::new();
-        let Ok(entries) = std::fs::read_dir(self.dir()) else {
+        let Some(dir) = self.source().and_then(|source| source.parent()) else {
+            return names;
+        };
+        let Ok(entries) = std::fs::read_dir(dir) else {
             return names;
         };
         for entry in entries.flatten() {
@@ -509,27 +548,20 @@ impl<'a> Watch<'a> {
 
     // Anything new next to the source after a build was written outside the build folder.
     fn strays(&self, before: &[String]) -> Vec<String> {
+        let Some(source) = self.source() else {
+            return Vec::new();
+        };
         let mut strays = Vec::new();
         for name in self.entries() {
-            let sample =
-                name.ends_with(".txt") && (name.starts_with("in") || name.starts_with("ans"));
-            let known = sample || name == self.source();
             let new = !before.contains(&name) || self.strays.contains(&name);
-            if !known && new {
+            if name != key(source) && new {
                 strays.push(name);
             }
         }
         strays
     }
 
-    fn source(&self) -> String {
-        format!("main.{}", self.lang.ext)
-    }
-
     fn status(&self, id: &ProblemId) -> Status {
-        if id.is_gym() {
-            return Status::Gym;
-        }
         let Some(attempts) = self.history.get(id) else {
             return Status::Todo;
         };
@@ -547,7 +579,7 @@ impl<'a> Watch<'a> {
         for offset in 0..self.ids.len() {
             let at = (from + offset) % self.ids.len();
             match self.status(&self.ids[at]) {
-                Status::Solved | Status::Gym => {}
+                Status::Solved => {}
                 Status::Tried | Status::Todo => return at,
             }
         }
@@ -557,19 +589,20 @@ impl<'a> Watch<'a> {
     // One column per problem with its attempts stacked upwards, oldest at the bottom.
     fn progress(&self, width: usize) -> String {
         const PREFIX: &str = "Progress: ";
-        let count = format!("  {}/{}", self.solved(), self.playable());
+        let count = format!("  {}/{}", self.solved(), self.ids.len());
         let room = width.saturating_sub(PREFIX.len() + count.len());
         let per_band = (room / 2).clamp(1, COLUMNS_PER_BAND);
         let mut columns = Vec::new();
         let mut current = 0;
         for (at, id) in self.ids.iter().enumerate() {
-            if id.is_gym() {
-                continue;
-            }
             if at == self.current {
                 current = columns.len();
             }
-            columns.push((self.column(id), at == self.current));
+            let several = self
+                .sources
+                .get(id)
+                .is_some_and(|sources| sources.len() > 1);
+            columns.push((self.column(id), at == self.current, several));
         }
         // The whole problemset is thousands of columns, so only the bands around the current one show.
         let bands = columns.len().div_ceil(per_band);
@@ -585,12 +618,12 @@ impl<'a> Watch<'a> {
         {
             let height = chunk
                 .iter()
-                .map(|(cells, _)| cells.len())
+                .map(|(cells, _, _)| cells.len())
                 .max()
                 .unwrap_or(0);
             for row in (0..height).rev() {
                 out.push_str(&" ".repeat(PREFIX.len()));
-                for (cells, _) in chunk {
+                for (cells, _, _) in chunk {
                     match cells.get(row) {
                         Some(cell) => out.push_str(cell),
                         None => out.push(' '),
@@ -605,13 +638,15 @@ impl<'a> Watch<'a> {
                 " ".repeat(PREFIX.len())
             };
             out.push_str(&lead);
-            for (_, is_current) in chunk {
-                let base = if *is_current {
-                    "━━".bold().to_string()
-                } else {
-                    "──".dim().to_string()
+            // A cross on the baseline marks a problem with more than one solution to swap between.
+            for (_, is_current, several) in chunk {
+                let base = match (is_current, several) {
+                    (true, true) => "━╋".bold(),
+                    (true, false) => "━━".bold(),
+                    (false, true) => "─┼".dim(),
+                    (false, false) => "──".dim(),
                 };
-                out.push_str(&base);
+                out.push_str(&base.to_string());
             }
             out.push('\n');
         }
@@ -625,7 +660,7 @@ impl<'a> Watch<'a> {
         let mut cells = Vec::new();
         let attempts = self.history.get(id).map_or(&[][..], Vec::as_slice);
         for attempt in attempts {
-            let ring = if attempt.passing { "◉" } else { "○" };
+            let ring = "○";
             let ring = match attempt.mark {
                 Mark::Accepted => ring.green(),
                 Mark::Rejected => ring.red(),
@@ -635,7 +670,10 @@ impl<'a> Watch<'a> {
             cells.push(ring.to_string());
         }
         let last = attempts.last().map_or(i64::MIN, |attempt| attempt.at);
-        match self.locals.get(id) {
+        let local = self
+            .source_of(id)
+            .and_then(|source| self.locals.get(&key(source)));
+        match local {
             Some(Local::Pending) => cells.push("•".dim().to_string()),
             Some(Local::Ran { passed, at }) if *at > last => {
                 let dot = if *passed { "•".green() } else { "•".red() };
@@ -650,33 +688,21 @@ impl<'a> Watch<'a> {
         cells
     }
 
-    fn playable(&self) -> usize {
-        let mut count = 0;
-        for id in &self.ids {
-            if !id.is_gym() {
-                count += 1;
-            }
-        }
-        count
-    }
-
     fn solved(&self) -> usize {
         let mut count = 0;
         for id in &self.ids {
             match self.status(id) {
                 Status::Solved => count += 1,
-                Status::Tried | Status::Todo | Status::Gym => {}
+                Status::Tried | Status::Todo => {}
             }
         }
         count
     }
 
     fn relevant(&self, path: &Path) -> bool {
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            return false;
-        };
-        let sample = name.ends_with(".txt") && (name.starts_with("in") || name.starts_with("ans"));
-        sample || name == self.source()
+        let samples = self.samples.join(self.id().to_string());
+        let source = self.source().is_some_and(|source| source == path);
+        source || path.parent() == Some(samples.as_path())
     }
 
     fn open(&mut self) {
@@ -684,13 +710,6 @@ impl<'a> Watch<'a> {
         self.strays.clear();
         self.verdict = Verdict::Idle;
         self.updates = None;
-        if self.id().is_gym() {
-            self.report = Report::Failed(format!(
-                "{} is a gym problem, cf can't open those because their statements aren't public pages",
-                self.id()
-            ));
-            return;
-        }
         match self.prepare() {
             Ok(()) => self.stale = true,
             Err(error) => self.report = Report::Failed(format!("{error:#}, press r to retry")),
@@ -698,50 +717,76 @@ impl<'a> Watch<'a> {
     }
 
     fn prepare(&mut self) -> Result<()> {
-        let dir = self.dir();
-        let file = dir.join(self.source());
-        let cached = format!("statements/{}.json", self.id());
-        // Problems opened before cf cached their files still need one download to learn them.
-        self.files = match self.client.load(&cached).filter(|_| file.exists()) {
-            Some(files) => files,
-            None => {
-                let url = self.id().url(Page::Problem);
+        let id = self.id().clone();
+        let samples = self.samples.join(id.to_string());
+        let cached = format!("statements/{id}.json");
+        // --lang asks for a solution in that language even when the problem has others.
+        let lang = self.lang.take();
+        let wanted = match &lang {
+            Some(name) => !self.sources.get(&id).is_some_and(|sources| {
+                sources.iter().any(|source| {
+                    source.extension().and_then(|ext| ext.to_str())
+                        == Some(self.config.langs[name].ext.as_str())
+                })
+            }),
+            None => self.source().is_none(),
+        };
+        let files = self.client.load(&cached).filter(|_| samples.is_dir());
+        self.files = match files {
+            Some(files) if !wanted => files,
+            _ => {
+                let url = id.url(Page::Problem);
                 let statement = statement::parse(&self.client.get(&url)?)?;
-                if !file.exists() {
-                    self.create(&dir, &file, &statement, &url)?;
+                // Samples already there may hold your own cases, so they are written only once.
+                if !samples.is_dir() {
+                    write_samples(&samples, &statement)?;
+                }
+                if wanted {
+                    let name = lang.unwrap_or_else(|| self.config.default_lang.clone());
+                    self.create(&id, &name, &statement, &url)?;
                 }
                 self.client.save(&cached, &statement.files)?;
                 statement.files
             }
         };
 
-        if let Some(old) = self.watched.take() {
+        for old in self.watched.drain(..) {
             let _ = self.debouncer.watcher().unwatch(&old);
         }
-        // Editors save by renaming a temp file over the source, so watch the folder and not the file.
-        self.debouncer
-            .watcher()
-            .watch(&dir, RecursiveMode::NonRecursive)?;
-        self.watched = Some(dir);
+        let Some(source) = self.source().cloned() else {
+            return Ok(());
+        };
+        // Editors save by renaming a temp file over the source, so watch its folder and not the file.
+        let folder = source.parent().unwrap_or(&self.root).to_path_buf();
+        for dir in [folder, samples] {
+            self.debouncer
+                .watcher()
+                .watch(&dir, RecursiveMode::NonRecursive)?;
+            self.watched.push(dir);
+        }
         Ok(())
     }
 
-    fn create(&self, dir: &Path, file: &Path, statement: &Statement, url: &str) -> Result<()> {
-        let template_path = self.templates.join(self.source());
+    fn create(
+        &mut self,
+        id: &ProblemId,
+        name: &str,
+        statement: &Statement,
+        url: &str,
+    ) -> Result<()> {
+        let lang = &self.config.langs[name];
+        let template_path = self.templates.join(format!("main.{}", lang.ext));
         let template = std::fs::read_to_string(&template_path)
             .with_context(|| format!("reading {}", template_path.display()))?;
-        std::fs::create_dir_all(dir)?;
-        match statement.kind {
-            Kind::Standard => {
-                for (k, sample) in statement.samples.iter().enumerate() {
-                    std::fs::write(dir.join(format!("in{}.txt", k + 1)), &sample.input)?;
-                    std::fs::write(dir.join(format!("ans{}.txt", k + 1)), &sample.answer)?;
-                }
-            }
-            Kind::Interactive => {}
+        let file = self.root.join(format!("{id}.{}", lang.ext));
+        // A file the glob skipped, say an ignored one, is kept as it is.
+        if !file.exists() {
+            let header = statement::comment(&lang.comment, statement, url);
+            std::fs::write(&file, header + &template)?;
         }
-        let header = statement::comment(&self.lang.comment, statement, url);
-        std::fs::write(file, header + &template)?;
+        let sources = self.sources.entry(id.clone()).or_default();
+        sources.insert(0, file);
+        self.active.insert(id.clone(), 0);
         Ok(())
     }
 
@@ -753,11 +798,18 @@ impl<'a> Watch<'a> {
                 return;
             }
         }
-        let path = PathBuf::from(self.paths().expand(&self.lang.submit, Quote::Plain));
+        let Some(file) = self.source().cloned() else {
+            return;
+        };
+        let lang = self.lang(&file);
+        let path = PathBuf::from(
+            self.paths(self.id(), &file)
+                .expand(&lang.submit, Quote::Plain),
+        );
         let Ok(source) = std::fs::read_to_string(&path) else {
             self.note = format!(
                 "nothing to copy yet, {} comes from a successful build",
-                self.lang.submit
+                lang.submit
             );
             return;
         };
@@ -793,10 +845,6 @@ impl<'a> Watch<'a> {
     fn expect(&mut self) {
         if self.updates.is_none() {
             let (sender, updates) = mpsc::channel();
-            self.sending = matches!(
-                self.locals.get(self.id()),
-                Some(Local::Ran { passed: true, .. })
-            );
             let client = self.client.clone();
             let handle = self.config.handle.clone();
             let id = self.id().clone();
@@ -825,15 +873,9 @@ impl<'a> Watch<'a> {
         let changed = !received.is_empty();
         for (verdict, submission) in received {
             self.verdict = verdict;
-            if let Some(submission) = submission {
-                if self.sending {
-                    self.passing.insert(submission.id);
-                    let _ = self.client.save(PASSING, &self.passing);
-                }
-                self.submissions.push(submission);
-            }
+            self.submissions.extend(submission);
         }
-        self.history = history(&self.submissions, &self.passing);
+        self.history = history(&self.submissions);
         changed
     }
 
@@ -907,9 +949,11 @@ impl<'a> Watch<'a> {
                 Status::Solved => "DONE   ".green(),
                 Status::Tried => "TRIED  ".red(),
                 Status::Todo => "PENDING".yellow(),
-                Status::Gym => "GYM    ".dim(),
             };
-            let local = match self.locals.get(id) {
+            let local = self
+                .source_of(id)
+                .and_then(|source| self.locals.get(&key(source)));
+            let local = match local {
                 Some(Local::Ran { passed: true, .. }) => "✓".green(),
                 Some(Local::Ran { passed: false, .. }) => "✗".red(),
                 Some(Local::Pending) => "·".dim(),
@@ -1003,13 +1047,15 @@ impl<'a> Watch<'a> {
                 format!("This problem reads {input} and writes {output}").yellow()
             );
         }
-        if self.report.passed() {
+        if self.report.passed()
+            && let Some(shown) = self.shown()
+        {
+            let lang = self.lang(&shown.source);
             let _ = writeln!(body, "\n{}", "Samples pass ✓".green().bold());
             let _ = writeln!(
                 body,
-                "Submit `{}` as {}, the verdict shows up here",
-                self.shown().expand(&self.lang.submit, Quote::Plain),
-                self.lang.judge
+                "Submit `{}`, the verdict shows up here",
+                shown.expand(&lang.submit, Quote::Plain)
             );
         }
         let verdict = match &self.verdict {
@@ -1040,7 +1086,24 @@ impl<'a> Watch<'a> {
                 let _ = write!(title, " ({rating})");
             }
         }
-        let editor = self.shown().expand(&self.config.editor, Quote::Shell);
+        if let Some(sources) = self.sources.get(id) {
+            let active = self.active.get(id).copied().unwrap_or(0);
+            let mut names = Vec::new();
+            for (at, source) in sources.iter().enumerate() {
+                let name = format!("{} {}", self.lang(source).icon, key(source));
+                let name = if at == active {
+                    name.bold().to_string()
+                } else {
+                    name.dim().to_string()
+                };
+                names.push(name);
+            }
+            let _ = write!(title, "   {}", names.join(" · "));
+        }
+        let editor = match self.shown() {
+            Some(shown) => shown.expand(&self.config.editor, Quote::Shell),
+            None => String::new(),
+        };
         let next = match self.verdict {
             Verdict::Accepted => "next".underlined().to_string(),
             Verdict::Idle
@@ -1063,6 +1126,7 @@ impl<'a> Watch<'a> {
                 ("n/p", &format!("{next}/prev")),
                 ("]f/]s/]t", "failed/solved/untouched"),
                 ("r", "rerun"),
+                ("s", "swap"),
                 ("l", "list"),
                 ("q", "quit"),
             ])
@@ -1169,7 +1233,7 @@ fn wrap(line: &str, width: usize) -> Vec<String> {
     rows
 }
 
-fn history(submissions: &[Submission], passing: &HashSet<u64>) -> HashMap<ProblemId, Vec<Attempt>> {
+fn history(submissions: &[Submission]) -> HashMap<ProblemId, Vec<Attempt>> {
     let mut history: HashMap<ProblemId, Vec<Attempt>> = HashMap::new();
     for submission in submissions {
         let Some(id) = submission.problem.id() else {
@@ -1184,13 +1248,34 @@ fn history(submissions: &[Submission], passing: &HashSet<u64>) -> HashMap<Proble
         history.entry(id).or_default().push(Attempt {
             mark,
             at: submission.creation_time_seconds,
-            passing: passing.contains(&submission.id),
         });
     }
     for attempts in history.values_mut() {
         attempts.sort_by_key(|attempt| attempt.at);
     }
     history
+}
+
+// The file name, like 4A.cpp, names a solution's build folder and stored result.
+fn key(source: &Path) -> String {
+    source
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+fn write_samples(dir: &Path, statement: &Statement) -> Result<()> {
+    std::fs::create_dir_all(dir)?;
+    match statement.kind {
+        Kind::Standard => {
+            for (k, sample) in statement.samples.iter().enumerate() {
+                std::fs::write(dir.join(format!("in{}.txt", k + 1)), &sample.input)?;
+                std::fs::write(dir.join(format!("ans{}.txt", k + 1)), &sample.answer)?;
+            }
+        }
+        Kind::Interactive => {}
+    }
+    Ok(())
 }
 
 // Runs on its own thread so a slow or missing connection never blocks the screen.

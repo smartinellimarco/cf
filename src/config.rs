@@ -12,7 +12,7 @@ pub struct Config {
     pub handle: Handle,
     #[serde(default = "editor")]
     pub editor: String,
-    pub lang: String,
+    pub default_lang: String,
     pub langs: HashMap<String, Lang>,
     #[serde(default)]
     pub lists: HashMap<String, String>,
@@ -21,11 +21,12 @@ pub struct Config {
 #[derive(Deserialize, Clone)]
 pub struct Lang {
     pub ext: String,
+    // A nerd font glyph shown next to the file name.
+    pub icon: String,
     pub comment: String,
     pub build: String,
     pub run: String,
     pub submit: String,
-    pub judge: String,
 }
 
 fn editor() -> String {
@@ -56,6 +57,10 @@ impl Dirs {
 
     pub fn templates(&self) -> PathBuf {
         self.config.join("templates")
+    }
+
+    pub fn samples(&self) -> PathBuf {
+        self.cache.join("samples")
     }
 
     pub fn builds(&self, folder: &Path) -> PathBuf {
@@ -104,11 +109,21 @@ impl Config {
                 check_placeholders(&format!("langs.{name}.{field}"), template)?;
             }
         }
-        if !config.langs.contains_key(&config.lang) {
+        if !config.langs.contains_key(&config.default_lang) {
             bail!(
-                "{shown} picks lang {:?} but langs has no such entry",
-                config.lang
+                "{shown} picks default_lang {:?} but langs has no such entry",
+                config.default_lang
             );
+        }
+        let mut exts = HashMap::new();
+        for (name, lang) in &config.langs {
+            // The extension is how a file finds its lang, so two langs can't share one.
+            if let Some(other) = exts.insert(lang.ext.as_str(), name) {
+                bail!(
+                    "{shown} gives langs {other} and {name} the same ext {:?}",
+                    lang.ext
+                );
+            }
         }
         Ok(config)
     }
@@ -124,18 +139,19 @@ impl Config {
         Ok(())
     }
 
-    pub fn lang(&self) -> &Lang {
-        &self.langs[&self.lang]
+    pub fn lang_of(&self, source: &Path) -> Option<&Lang> {
+        let ext = source.extension()?.to_str()?;
+        self.langs.values().find(|lang| lang.ext == ext)
     }
 }
 
-const PLACEHOLDERS: [&str; 3] = ["dir", "source", "build"];
+const PLACEHOLDERS: [&str; 3] = ["source", "samples", "build"];
 
 fn check_placeholders(field: &str, template: &str) -> Result<()> {
     for name in placeholders(template) {
         if !PLACEHOLDERS.contains(&name) {
             bail!(
-                "config {field} uses {{{name}}}, the placeholders are {{dir}}, {{source}} and {{build}}"
+                "config {field} uses {{{name}}}, the placeholders are {{source}}, {{samples}} and {{build}}"
             );
         }
     }
@@ -158,9 +174,10 @@ fn placeholders(template: &str) -> Vec<&str> {
     found
 }
 
+#[derive(Clone)]
 pub struct Paths {
-    pub dir: PathBuf,
     pub source: PathBuf,
+    pub samples: PathBuf,
     pub build: PathBuf,
 }
 
@@ -171,9 +188,13 @@ pub enum Quote {
 
 impl Paths {
     pub fn expand(&self, template: &str, quote: Quote) -> String {
-        let Paths { dir, source, build } = self;
+        let Paths {
+            source,
+            samples,
+            build,
+        } = self;
         let mut out = template.to_string();
-        for (name, path) in [("dir", dir), ("source", source), ("build", build)] {
+        for (name, path) in [("source", source), ("samples", samples), ("build", build)] {
             let path = path.display().to_string();
             let value = match quote {
                 Quote::Shell => shell_quote(&path),
