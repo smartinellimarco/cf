@@ -33,7 +33,7 @@ const PASSING: &str = "passing.json";
 const FLASH: Duration = Duration::from_secs(1);
 const COLUMN_MAX: usize = 40;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Status {
     Solved,
     Tried,
@@ -59,6 +59,14 @@ struct Attempt {
     at: i64,
     // Sent from cf while the samples passed.
     passing: bool,
+}
+
+enum Motion {
+    Next,
+    Prev,
+    First,
+    Last,
+    Find { forward: bool, status: Status },
 }
 
 enum View {
@@ -116,6 +124,7 @@ pub struct Watch<'a> {
     history: HashMap<ProblemId, Vec<Attempt>>,
     passing: HashSet<u64>,
     sending: bool,
+    prefix: Option<char>,
     catalog: HashMap<ProblemId, Problem>,
     submissions: Vec<Submission>,
     current: usize,
@@ -175,6 +184,7 @@ impl<'a> Watch<'a> {
             history: HashMap::new(),
             passing: HashSet::new(),
             sending: false,
+            prefix: None,
             catalog,
             submissions,
             current: 0,
@@ -285,54 +295,114 @@ impl<'a> Watch<'a> {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Action::Quit;
         }
-        match self.view {
-            View::List { cursor } => match key.code {
-                KeyCode::Char('j') | KeyCode::Down => {
-                    self.view = View::List {
-                        cursor: (cursor + 1).min(self.ids.len() - 1),
-                    };
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    self.view = View::List {
-                        cursor: cursor.saturating_sub(1),
-                    };
-                }
-                KeyCode::Char('g') => self.view = View::List { cursor: 0 },
-                KeyCode::Char('G') => {
-                    self.view = View::List {
-                        cursor: self.ids.len() - 1,
-                    }
-                }
-                KeyCode::Enter | KeyCode::Char('c') => {
-                    self.current = cursor;
-                    self.view = View::Problem;
-                    self.open();
-                }
-                KeyCode::Char('l') | KeyCode::Char('q') | KeyCode::Esc => self.view = View::Problem,
+        let KeyCode::Char(char) = key.code else {
+            self.prefix = None;
+            match (key.code, &self.view) {
+                (KeyCode::Down, View::List { .. }) => self.go(Motion::Next),
+                (KeyCode::Up, View::List { .. }) => self.go(Motion::Prev),
+                (KeyCode::Enter, View::List { cursor }) => self.continue_at(*cursor),
+                (KeyCode::Esc, View::List { .. }) => self.view = View::Problem,
+                (KeyCode::Esc, View::Problem) => return Action::Quit,
                 _ => {}
-            },
-            View::Problem => match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => return Action::Quit,
-                KeyCode::Char('y') => self.copy(),
-                KeyCode::Char('o') => self.submit(),
-                KeyCode::Char('l') => {
-                    self.view = View::List {
-                        cursor: self.current,
-                    }
+            }
+            return Action::Continue;
+        };
+        // Motions like gg and ]f take two keys, vim style.
+        if let Some(prefix) = self.prefix.take() {
+            let motion = match (prefix, char) {
+                ('g', 'g') => Motion::First,
+                ('g', 'e') => Motion::Last,
+                (']' | '[', 'f' | 's' | 't') => Motion::Find {
+                    forward: prefix == ']',
+                    status: match char {
+                        'f' => Status::Tried,
+                        's' => Status::Solved,
+                        _ => Status::Todo,
+                    },
+                },
+                _ => return Action::Continue,
+            };
+            self.go(motion);
+            return Action::Continue;
+        }
+        match (char, &self.view) {
+            ('g' | ']' | '[', _) => self.prefix = Some(char),
+            ('n' | 'j', _) => self.go(Motion::Next),
+            ('p' | 'k', _) => self.go(Motion::Prev),
+            ('c', View::List { cursor }) => self.continue_at(*cursor),
+            ('l' | 'q', View::List { .. }) => self.view = View::Problem,
+            ('q', View::Problem) => return Action::Quit,
+            ('y', View::Problem) => self.copy(),
+            ('o', View::Problem) => self.submit(),
+            ('l', View::Problem) => {
+                self.view = View::List {
+                    cursor: self.current,
                 }
-                KeyCode::Char('n') => {
-                    if self.finished() {
-                        self.note = format!("{}", "Every problem in this list is solved ✓".green());
-                    } else {
-                        self.current = self.next(self.current + 1);
-                        self.open();
-                    }
-                }
-                KeyCode::Char('r') => self.open(),
-                _ => {}
-            },
+            }
+            ('r', View::Problem) => self.open(),
+            _ => {}
         }
         Action::Continue
+    }
+
+    fn continue_at(&mut self, cursor: usize) {
+        self.current = cursor;
+        self.view = View::Problem;
+        self.open();
+    }
+
+    // Moves the list cursor, or the current problem outside the list.
+    fn go(&mut self, motion: Motion) {
+        let from = match self.view {
+            View::List { cursor } => cursor,
+            View::Problem => self.current,
+        };
+        let last = self.ids.len() - 1;
+        let to = match motion {
+            Motion::Next => Some((from + 1).min(last)),
+            Motion::Prev => Some(from.saturating_sub(1)),
+            Motion::First => Some(0),
+            Motion::Last => Some(last),
+            Motion::Find { forward, status } => {
+                let found = |at: &usize| self.status(&self.ids[*at]) == status;
+                if forward {
+                    (from + 1..=last).find(found)
+                } else {
+                    (0..from).rev().find(found)
+                }
+            }
+        };
+        let Some(to) = to else {
+            // The list view has no room for notes, and one left behind would show up later.
+            if let View::List { .. } = self.view {
+                return;
+            }
+            let name = match motion {
+                Motion::Find {
+                    status: Status::Solved,
+                    ..
+                } => "solved",
+                Motion::Find {
+                    status: Status::Tried,
+                    ..
+                } => "failed",
+                _ => "untouched",
+            };
+            let side = match motion {
+                Motion::Find { forward: true, .. } => "after",
+                _ => "before",
+            };
+            self.note = format!("no {name} problem {side} this one");
+            return;
+        };
+        match self.view {
+            View::List { .. } => self.view = View::List { cursor: to },
+            View::Problem if to != self.current => {
+                self.current = to;
+                self.open();
+            }
+            View::Problem => {}
+        }
     }
 
     fn id(&self) -> &ProblemId {
@@ -482,16 +552,6 @@ impl<'a> Watch<'a> {
             }
         }
         from % self.ids.len()
-    }
-
-    fn finished(&self) -> bool {
-        for id in &self.ids {
-            match self.status(id) {
-                Status::Solved | Status::Gym => {}
-                Status::Tried | Status::Todo => return false,
-            }
-        }
-        true
     }
 
     // One column per problem with its attempts stacked upwards, oldest at the bottom.
@@ -813,8 +873,9 @@ impl<'a> Watch<'a> {
             "{}\n{}",
             self.progress(width),
             hotkeys(&[
-                ("j/k", "down/up"),
-                ("g/G", "first/last"),
+                ("n/p", "down/up"),
+                ("gg/ge", "first/last"),
+                ("]f/]s/]t", "next failed/solved/untouched"),
                 ("c", "continue at"),
                 ("q", "quit list"),
             ])
@@ -999,7 +1060,8 @@ impl<'a> Watch<'a> {
             prompt(&[
                 ("y", &copy),
                 ("o", "submit"),
-                ("n", &next),
+                ("n/p", &format!("{next}/prev")),
+                ("]f/]s/]t", "failed/solved/untouched"),
                 ("r", "rerun"),
                 ("l", "list"),
                 ("q", "quit"),
