@@ -915,9 +915,13 @@ impl<'a> Watch<'a> {
             "{}\n{}",
             self.progress(width),
             hotkeys(&[
-                ("n/p", "down/up"),
-                ("gg/ge", "first/last"),
-                ("]f/]s/]t", "next failed/solved/untouched"),
+                ("n", "down"),
+                ("p", "up"),
+                ("gg", "first"),
+                ("ge", "last"),
+                ("]f", "failed"),
+                ("]s", "solved"),
+                ("]t", "untouched"),
                 ("c", "continue at"),
                 ("q", "quit list"),
             ])
@@ -1123,8 +1127,11 @@ impl<'a> Watch<'a> {
             prompt(&[
                 ("y", &copy),
                 ("o", "submit"),
-                ("n/p", &format!("{next}/prev")),
-                ("]f/]s/]t", "failed/solved/untouched"),
+                ("n", &next),
+                ("p", "prev"),
+                ("]f", "failed"),
+                ("]s", "solved"),
+                ("]t", "untouched"),
                 ("r", "rerun"),
                 ("s", "swap"),
                 ("l", "list"),
@@ -1140,9 +1147,9 @@ impl<'a> Watch<'a> {
 fn prompt(keys: &[(&str, &str)]) -> String {
     let mut out = String::new();
     for (key, label) in keys {
-        let _ = write!(out, "{}:{label} / ", key.bold());
+        let _ = write!(out, "{}:{label}  ", key.bold());
     }
-    out.truncate(out.len() - " / ".len());
+    out.truncate(out.len() - "  ".len());
     out.push_str(" ? ");
     out
 }
@@ -1150,9 +1157,9 @@ fn prompt(keys: &[(&str, &str)]) -> String {
 fn hotkeys(keys: &[(&str, &str)]) -> String {
     let mut out = String::new();
     for (key, label) in keys {
-        let _ = write!(out, "{}:{label} / ", key.yellow().bold());
+        let _ = write!(out, "{}:{label}  ", key.yellow().bold());
     }
-    out.truncate(out.len() - " / ".len());
+    out.truncate(out.len() - "  ".len());
     out
 }
 
