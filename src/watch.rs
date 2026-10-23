@@ -29,9 +29,8 @@ const SLACK_SECONDS: i64 = 30;
 // like a vim window: it moves once the cursor gets within SCROLLOFF columns of an edge.
 const MARGIN: usize = 4;
 const SCROLLOFF: usize = 3;
-// Room for the labels (`local ┌ `) and for the counts of problems left and right of the window.
+// Room for the labels, `local ┌ `.
 const LABELS: usize = 8;
-const INDICATOR: usize = 6;
 const ATTEMPTS_SHOWN: usize = 5;
 // nf-md-circle_outline, nf-md-circle and nf-md-dots_vertical.
 const RING: &str = "\u{f0766}";
@@ -686,7 +685,8 @@ impl<'a> Watch<'a> {
     // One column per problem with its attempts stacked upwards, newest at the bottom. Also
     // returns the problems on screen, which the legend counts when there is no list.
     fn progress(&self, width: usize) -> Vec<String> {
-        let shown = per_band(width);
+        let shown = self.per_band(width);
+        let gutter = self.gutter();
         let mut columns = Vec::new();
         for (at, id) in self.ids.iter().enumerate().skip(self.offset).take(shown) {
             columns.push((self.column(id), at == self.current));
@@ -716,7 +716,7 @@ impl<'a> Watch<'a> {
                 };
                 let mut line = format!(
                     "{} {} {} ",
-                    format!("{left:<w$}", w = INDICATOR - 1).dim(),
+                    format!("{left:<w$}", w = gutter - 1).dim(),
                     format!("{label:>5}").dim(),
                     edge.dim()
                 );
@@ -742,7 +742,7 @@ impl<'a> Watch<'a> {
                 }
                 band.push(line);
             }
-            let mut base = format!("{}{} ", " ".repeat(INDICATOR), "      └".dim());
+            let mut base = format!("{}{} ", " ".repeat(gutter), "      └".dim());
             for (_, is_current) in chunk {
                 let mark = if *is_current {
                     "━".bold()
@@ -759,8 +759,9 @@ impl<'a> Watch<'a> {
         }
         // The grid centers on its own width; the popup is then painted over it like a completion
         // menu, next to the cursor.
-        let widest = lines.iter().map(|line| visible(line)).max().unwrap_or(0);
-        let pad = " ".repeat(width.saturating_sub(widest) / 2);
+        // Centered by the band's full width, counts or not, so gg and ge don't shift it.
+        let total = 2 * gutter + LABELS + 2 * shown;
+        let pad = " ".repeat(width.saturating_sub(total) / 2);
         let popup = self.popup_lines();
         if let Some((row, column)) = cursor
             && !popup.is_empty()
@@ -887,7 +888,7 @@ impl<'a> Watch<'a> {
     fn legend(&self, width: usize) -> Vec<String> {
         let ids = &self.ids;
         // Running work outside the grid's window would otherwise make the count look stuck.
-        let window = self.offset..self.offset + per_band(width);
+        let window = self.offset..self.offset + self.per_band(width);
         let hidden = ids
             .iter()
             .enumerate()
@@ -1183,10 +1184,21 @@ impl<'a> Watch<'a> {
         changed
     }
 
+    // Room for `‹ 149` and `149 ›` at the band's ends, sized for the longest count this list can
+    // have, like nvim's statuscolumn: the grid's width never depends on which counts show.
+    fn gutter(&self) -> usize {
+        "‹ ".chars().count() + self.ids.len().to_string().len() + 1
+    }
+
+    // How many problems fit in the grid's window at this width; each takes two columns.
+    fn per_band(&self, width: usize) -> usize {
+        (width.saturating_sub(2 * MARGIN + LABELS + 2 * self.gutter()) / 2).max(1)
+    }
+
     // Keeps the current problem SCROLLOFF columns away from the window's edges, moving the window
     // only when it has to, so the cursor travels over a still grid.
     fn scroll(&mut self, width: usize) {
-        let shown = per_band(width);
+        let shown = self.per_band(width);
         let room = SCROLLOFF.min(shown.saturating_sub(1) / 2);
         if self.current < self.offset + room {
             self.offset = self.current.saturating_sub(room);
@@ -1567,11 +1579,6 @@ fn columns(line: &str) -> Vec<String> {
         last.push_str(&pending);
     }
     columns
-}
-
-// How many problems fit in the grid's window at this width; each takes two columns.
-fn per_band(width: usize) -> usize {
-    (width.saturating_sub(2 * MARGIN + LABELS + 2 * INDICATOR) / 2).max(1)
 }
 
 fn center(line: &str, width: usize) -> String {
