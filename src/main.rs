@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use clap::{Parser, Subcommand};
+use clap::Parser;
 
 use crate::codeforces::{Client, Handle, Problem, ProblemId, Refresh, Submission};
 use crate::config::{Config, Dirs};
@@ -25,13 +25,8 @@ use crate::list::List;
 use crate::watch::{Setup, Watch};
 
 #[derive(Parser)]
-#[command(
-    about = "Rustlings-style Codeforces practice",
-    args_conflicts_with_subcommands = true
-)]
+#[command(about = "Rustlings-style Codeforces practice")]
 struct Cli {
-    #[command(subcommand)]
-    command: Option<Command>,
     #[arg(help = "Problems to walk, as ids or links; defaults to the solutions in the folder")]
     problems: Vec<String>,
     #[arg(
@@ -50,12 +45,20 @@ struct Cli {
     dir: PathBuf,
     #[arg(long, help = "Language for new solutions, instead of default_lang")]
     lang: Option<String>,
+    #[arg(
+        long,
+        help = "Start with an empty cache, thrown away on exit; your own cache stays as it is"
+    )]
+    no_cache: bool,
 }
 
-#[derive(Subcommand)]
-enum Command {
-    #[command(about = "Refresh the problem set and your submissions")]
-    Sync,
+// A cache for one run, so --no-cache never touches the real one and its own sample cases.
+struct Throwaway(PathBuf);
+
+impl Drop for Throwaway {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 const PROBLEMSET_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
@@ -72,7 +75,13 @@ fn main() -> ExitCode {
 }
 
 fn start(cli: Cli) -> Result<()> {
-    let dirs = Dirs::new()?;
+    let mut dirs = Dirs::new()?;
+    let _throwaway = if cli.no_cache {
+        dirs.cache = std::env::temp_dir().join(format!("cf-{}", std::process::id()));
+        Some(Throwaway(dirs.cache.clone()))
+    } else {
+        None
+    };
     dirs.prune();
     let mut config = Config::load(&dirs)?;
     let mut client = Client::new(dirs.cache.clone())?;
@@ -81,14 +90,7 @@ fn start(cli: Cli) -> Result<()> {
         client.check_handle(&handle)?;
         config.save_handle(&dirs, handle)?;
     }
-    match &cli.command {
-        Some(Command::Sync) => {
-            client.problems(Refresh::Fetch)?;
-            client.submissions(&config.handle)?;
-            Ok(())
-        }
-        None => practice(&mut client, &dirs, config, cli),
-    }
+    practice(&mut client, &dirs, config, cli)
 }
 
 // Reads from the terminal itself because stdin may be a piped list.
