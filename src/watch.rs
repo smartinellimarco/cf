@@ -903,10 +903,7 @@ impl<'a> Watch<'a> {
             ),
             entry(EMPTY.dark_grey().to_string(), unsolved, "no solution"),
         ];
-        vec![
-            format!("{} {}", "remote".bold(), remote.join("   ")),
-            format!("{}  {}", "local".bold(), local.join("   ")),
-        ]
+        vec![remote.join("  "), local.join("  ")]
     }
 
     fn stored(&self, id: &ProblemId) -> Option<&Stored> {
