@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crossterm::style::{Color, Stylize};
+use crossterm::style::{Color, StyledContent, Stylize};
 use crossterm::{cursor, execute, queue, terminal};
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
@@ -34,6 +34,8 @@ const DOT: &str = "\u{f0765}";
 const MORE: &str = "\u{f01d9}";
 // nf-md-circle_small, for a problem with nothing to show yet.
 const EMPTY: &str = "\u{f09df}";
+// nf-md-checkbox_multiple_blank_circle, the local dot of a problem with several solutions.
+const MANY: &str = "\u{f063b}";
 // Four braille dots in the middle of the cell, the missing one going round clockwise.
 const SPINNER: [&str; 4] = ["⠴", "⠦", "⠖", "⠲"];
 const SPIN: Duration = Duration::from_millis(120);
@@ -122,8 +124,8 @@ enum Action {
     Quit,
 }
 
-// A grid column: its cells, whether it is the current problem, and how many solutions it has.
-type Column = (Vec<String>, bool, usize);
+// A grid column: its cells and whether it is the current problem.
+type Column = (Vec<String>, bool);
 
 // A verdict, plus the submission once it is final.
 type Update = (Verdict, Option<Submission>);
@@ -679,8 +681,7 @@ impl<'a> Watch<'a> {
         let per_band = (width / 2).clamp(1, COLUMNS_PER_BAND);
         let mut columns = Vec::new();
         for (at, id) in self.ids.iter().enumerate() {
-            let solutions = self.files.get(id).map_or(0, Vec::len);
-            columns.push((self.column(id), at == self.current, solutions));
+            columns.push((self.column(id), at == self.current));
         }
         // Fixed bands, so moving shifts the current mark and not the grid.
         let count = columns.len().div_ceil(per_band);
@@ -709,14 +710,10 @@ impl<'a> Watch<'a> {
                     _ => ("", "│"),
                 };
                 let mut line = format!("{} {} ", format!("{label:>5}").dim(), edge.dim());
-                for (cells, is_current, solutions) in chunk.iter() {
-                    // Every cell takes two columns: a glyph and its gap. A local cell with more
-                    // than one solution puts their count in its gap, like 󰝥².
+                for (cells, is_current) in chunk.iter() {
+                    // Every cell takes two columns: a glyph and its gap.
                     let cell = cells.get(row).map_or("", String::as_str);
-                    let gap = match superscript(*solutions) {
-                        Some(count) if row == 0 => count.dim().to_string(),
-                        _ => GAP.repeat(2 - visible(cell).min(1)),
-                    };
+                    let gap = GAP.repeat(2 - visible(cell).min(1));
                     // The cursor's brackets take the gaps around its cell, so nothing shifts.
                     let cursor = *is_current && row == self.row && !cell.is_empty();
                     if cursor {
@@ -733,7 +730,7 @@ impl<'a> Watch<'a> {
                 band.push(line);
             }
             let mut base = format!("{} ", "      └".dim());
-            for (_, is_current, _) in chunk {
+            for (_, is_current) in chunk {
                 let mark = if *is_current {
                     "━".bold()
                 } else {
@@ -879,6 +876,10 @@ impl<'a> Watch<'a> {
                 .count()
         };
         let unsolved = ids.iter().filter(|id| self.local(id).is_none()).count();
+        let several = ids
+            .iter()
+            .filter(|id| self.files.get(id).is_some_and(|files| files.len() > 1))
+            .count();
         let entry =
             |symbol: String, count: usize, label: &str| format!("{symbol}{GAP}{count} {label}");
         let remote = [
@@ -902,6 +903,7 @@ impl<'a> Watch<'a> {
                 "no samples",
             ),
             entry(EMPTY.dark_grey().to_string(), unsolved, "no solution"),
+            entry(MANY.dim().to_string(), several, "several solutions"),
         ];
         vec![remote.join("  "), local.join("  ")]
     }
@@ -976,8 +978,9 @@ impl<'a> Watch<'a> {
     // above it the attempts newest first, so the mark for older hidden ones sits on top.
     // Rings are submissions and the filled circle is the local result, all nerd font glyphs.
     fn column(&self, id: &ProblemId) -> Vec<String> {
+        let several = self.files.get(id).is_some_and(|files| files.len() > 1);
         let mut cells = vec![match self.local(id) {
-            Some(local) => self.local_cell(local),
+            Some(local) => self.local_cell(local, several),
             None => EMPTY.dark_grey().to_string(),
         }];
         let attempts = self.history.get(id).map_or(&[][..], Vec::as_slice);
@@ -991,12 +994,15 @@ impl<'a> Watch<'a> {
     }
 
     // A running solution spins through a circle filling up.
-    fn local_cell(&self, local: Local) -> String {
+    fn local_cell(&self, local: Local, several: bool) -> String {
         match local {
             Local::Running => {
                 let frame = self.started.elapsed().as_millis() / SPIN.as_millis();
                 let at = frame as usize % SPINNER.len();
                 SPINNER[at].dark_grey().to_string()
+            }
+            Local::Pass | Local::Fail | Local::NoSamples if several => {
+                paint(MANY, local).to_string()
             }
             Local::Pass | Local::Fail | Local::NoSamples => local_dot(local),
         }
@@ -1459,12 +1465,6 @@ fn verdict_text(submission: &Submission) -> String {
     }
 }
 
-fn superscript(count: usize) -> Option<&'static str> {
-    ["²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"]
-        .get(count.checked_sub(2)?)
-        .copied()
-}
-
 fn ring(mark: Mark) -> String {
     let ring = match mark {
         Mark::Accepted => RING.green(),
@@ -1476,13 +1476,19 @@ fn ring(mark: Mark) -> String {
 }
 
 fn local_dot(local: Local) -> String {
-    let dot = match local {
-        Local::Pass => DOT.green(),
-        Local::Fail => DOT.red(),
-        Local::Running => SPINNER[0].dark_grey(),
-        Local::NoSamples => DOT.dim(),
-    };
-    dot.to_string()
+    match local {
+        Local::Running => SPINNER[0].dark_grey().to_string(),
+        Local::Pass | Local::Fail | Local::NoSamples => paint(DOT, local).to_string(),
+    }
+}
+
+fn paint(glyph: &str, local: Local) -> StyledContent<&str> {
+    match local {
+        Local::Pass => glyph.green(),
+        Local::Fail => glyph.red(),
+        Local::Running => glyph.dark_grey(),
+        Local::NoSamples => glyph.dim(),
+    }
 }
 
 // Paints `top` over `line` from display column `at`, keeping what lies before and after it.
