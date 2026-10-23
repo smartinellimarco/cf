@@ -25,7 +25,9 @@ const POLL_EVERY: Duration = Duration::from_secs(5);
 const POLL_FOR: Duration = Duration::from_secs(15 * 60);
 // Allows for clock skew between this machine and Codeforces.
 const SLACK_SECONDS: i64 = 30;
-const REPORT_LINES: usize = 14;
+const REPORT_LINES: usize = 12;
+// Notes and the verdict keep their own rows, wherever the report ends.
+const MESSAGE_LINES: usize = 3;
 const NAME_WIDTH: usize = 40;
 const COLUMNS_PER_BAND: usize = 50;
 const BANDS_SHOWN: usize = 2;
@@ -697,12 +699,8 @@ impl<'a> Watch<'a> {
         };
         let mut lines = Vec::new();
         for chunk in bands {
-            let height = chunk
-                .iter()
-                .map(|(cells, _, _)| cells.len())
-                .max()
-                .unwrap_or(0);
-            for row in (0..height).rev() {
+            // Always the full height, so what comes below never moves.
+            for row in (0..=ATTEMPTS_SHOWN).rev() {
                 let mut line = String::new();
                 for (cells, _, _) in chunk {
                     match cells.get(row) {
@@ -726,6 +724,16 @@ impl<'a> Watch<'a> {
             }
             lines.push(base);
         }
+        let checking = self
+            .locals
+            .values()
+            .filter(|local| matches!(local, Local::Pending))
+            .count();
+        let count = if checking > 0 {
+            format!("{count}  {}", format!("· checking {checking}").dark_grey())
+        } else {
+            count
+        };
         (lines, count)
     }
 
@@ -1147,6 +1155,25 @@ impl<'a> Watch<'a> {
 
     fn messages(&self) -> Vec<String> {
         let mut messages = Vec::new();
+        // Most important first, since only MESSAGE_LINES of them show.
+        let verdict = match &self.verdict {
+            Verdict::Idle => String::new(),
+            Verdict::Waiting => "Waiting for your submission…".to_string(),
+            Verdict::Retrying { reason } => format!("{reason}, retrying…"),
+            Verdict::Testing { passed } => format!("Testing… {passed} passed"),
+            Verdict::Accepted => format!(
+                "{} Enter `n` to move on to the next problem",
+                "Accepted ✓".green().bold()
+            ),
+            Verdict::Rejected { verdict, test } => {
+                format!("{}", format!("{verdict} on test {test}").red().bold())
+            }
+        };
+        for line in [&self.note, &verdict] {
+            if !line.is_empty() {
+                messages.push(line.clone());
+            }
+        }
         if !self.strays.is_empty() {
             let stray = format!(
                 "Build wrote {} next to the source instead of {{build}}",
@@ -1169,31 +1196,14 @@ impl<'a> Watch<'a> {
                 shown.expand(&lang.submit, Quote::Plain)
             ));
         }
-        let verdict = match &self.verdict {
-            Verdict::Idle => String::new(),
-            Verdict::Waiting => "Waiting for your submission…".to_string(),
-            Verdict::Retrying { reason } => format!("{reason}, retrying…"),
-            Verdict::Testing { passed } => format!("Testing… {passed} passed"),
-            Verdict::Accepted => format!(
-                "{} Enter `n` to move on to the next problem",
-                "Accepted ✓".green().bold()
-            ),
-            Verdict::Rejected { verdict, test } => {
-                format!("{}", format!("{verdict} on test {test}").red().bold())
-            }
-        };
-        for line in [&self.note, &verdict] {
-            if !line.is_empty() {
-                messages.push(line.clone());
-            }
-        }
         messages
     }
 
     // Like rustlings the view flows top to bottom, and the report keeps a fixed height so
     // nothing below it moves when it changes. Every line is centered.
     fn problem(&self, width: usize) -> (String, String) {
-        let messages: Vec<String> = self.messages().iter().map(|m| center(m, width)).collect();
+        let mut messages: Vec<String> = self.messages().iter().map(|m| center(m, width)).collect();
+        messages.resize(MESSAGE_LINES, String::new());
         let (head, details) = self.report();
         let mut report: Vec<String> = head.iter().map(|line| center(line, width)).collect();
         if !details.is_empty() {
@@ -1204,20 +1214,17 @@ impl<'a> Watch<'a> {
         for line in report {
             lines.extend(wrap(&line, width));
         }
-        let room = REPORT_LINES.saturating_sub(messages.len() + 1);
-        if lines.len() > room {
-            lines.truncate(room.saturating_sub(1));
+        if lines.len() > REPORT_LINES {
+            lines.truncate(REPORT_LINES - 1);
             lines.push(center(&"…".dim().to_string(), width));
-        }
-        if !messages.is_empty() {
-            lines.push(String::new());
-            lines.extend(messages);
         }
         lines.resize(REPORT_LINES, String::new());
 
         let (grid, count) = self.progress(width);
         lines.extend(center_block(&grid, width));
         lines.push(center(&count, width));
+        lines.push(String::new());
+        lines.extend(messages);
         lines.push(String::new());
         lines.push(center(&legend(), width));
 
@@ -1247,6 +1254,7 @@ impl<'a> Watch<'a> {
             let _ = write!(title, "   {}", icons.concat());
         }
         lines.push(center(&title, width));
+        lines.push(String::new());
         // A background like inline code in markdown, from the terminal's own palette.
         let editor = self.shown().expand(&self.config.editor, Quote::Shell);
         lines.push(center(
