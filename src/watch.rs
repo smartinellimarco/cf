@@ -17,7 +17,7 @@ use crate::config::{Config, Dirs, Lang, Paths, Quote};
 use crate::fetch::{Fetched, Fetcher};
 use crate::local;
 use crate::run::{Outcome, Report};
-use crate::statement::{self, Files, Statement};
+use crate::statement::{self, Rules, Statement};
 use crate::sweep::{self, Done, Job, Runner};
 
 const TICK: Duration = Duration::from_millis(100);
@@ -178,7 +178,7 @@ pub struct Watch<'a> {
     builds: PathBuf,
     strays: Vec<String>,
     before: Vec<String>,
-    files: Files,
+    rules: Rules,
     runner: Runner,
     fetcher: Fetcher,
     // The statement on screen, once downloaded; starting a solution copies it on top.
@@ -248,7 +248,7 @@ impl<'a> Watch<'a> {
             root,
             strays: Vec::new(),
             before: Vec::new(),
-            files: Files::default(),
+            rules: Rules::default(),
             runner: Runner::new(results.clone()),
             fetcher,
             statement: None,
@@ -313,7 +313,7 @@ impl<'a> Watch<'a> {
             {
                 self.stale = false;
                 let job = self.job(self.id(), &source);
-                let hash = sweep::hash(&job.paths, &job.lang, &job.files).ok();
+                let hash = sweep::hash(&job.paths, &job.lang, &job.rules).ok();
                 let stored = sweep::load(&self.results, &job.key)
                     .filter(|stored| !self.rerun && Some(&stored.hash) == hash.as_ref());
                 self.rerun = false;
@@ -491,18 +491,18 @@ impl<'a> Watch<'a> {
     }
 
     fn job(&self, id: &ProblemId, source: &Path) -> Job {
-        let files = if id == self.id() {
-            self.files.clone()
+        let rules = if id == self.id() {
+            self.rules.clone()
         } else {
             let statement: Option<Statement> = self.client.load(&format!("statements/{id}.json"));
             statement
-                .map(|statement| statement.files)
+                .map(|statement| statement.rules)
                 .unwrap_or_default()
         };
         Job {
             key: key(source),
             paths: self.paths(id, source),
-            files,
+            rules,
             lang: self.lang(source),
         }
     }
@@ -542,7 +542,7 @@ impl<'a> Watch<'a> {
                 continue;
             }
             let job = self.job(&id, &source);
-            let hash = sweep::hash(&job.paths, &job.lang, &job.files).ok();
+            let hash = sweep::hash(&job.paths, &job.lang, &job.rules).ok();
             match sweep::load(&self.results, &job.key) {
                 Some(stored) if Some(&stored.hash) == hash.as_ref() => {
                     self.set_local(job.key, &stored.report);
@@ -851,7 +851,7 @@ impl<'a> Watch<'a> {
             Some(statement) => self.ready(statement),
             None => {
                 self.statement = None;
-                self.files = Files::default();
+                self.rules = Rules::default();
                 self.report = Report::Downloading;
                 self.fetcher.first(id);
             }
@@ -859,7 +859,7 @@ impl<'a> Watch<'a> {
     }
 
     fn ready(&mut self, statement: Statement) {
-        self.files = statement.files.clone();
+        self.rules = statement.rules.clone();
         self.statement = Some(statement);
         if self.source().is_none() {
             self.report = Report::NoSolution;
@@ -1089,11 +1089,19 @@ impl<'a> Watch<'a> {
                         elapsed,
                         expected,
                         got,
-                    } => ("wrong answer", Some(elapsed), diff(expected, got)),
+                    } => (
+                        "wrong answer".to_string(),
+                        Some(elapsed),
+                        diff(expected, got),
+                    ),
                     Outcome::Crash { elapsed, stderr } => {
-                        ("runtime error", Some(elapsed), block(stderr))
+                        ("runtime error".to_string(), Some(elapsed), block(stderr))
                     }
-                    Outcome::Timeout => ("over 5 s", None, Vec::new()),
+                    Outcome::Timeout => ("over 5 s".to_string(), None, Vec::new()),
+                    Outcome::Slow { elapsed, limit } => {
+                        let what = format!("over the {} ms time limit", limit.as_millis());
+                        (what, Some(elapsed), Vec::new())
+                    }
                 };
                 let mut line = format!("Sample {k} ✗ {what}").red().to_string();
                 if let Some(elapsed) = elapsed {
@@ -1148,7 +1156,7 @@ impl<'a> Watch<'a> {
             );
             messages.push(stray.yellow().to_string());
         }
-        let Files { input, output } = &self.files;
+        let Rules { input, output, .. } = &self.rules;
         if input.is_some() || output.is_some() {
             let input = input.as_deref().unwrap_or("stdin");
             let output = output.as_deref().unwrap_or("stdout");

@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use scraper::{ElementRef, Html, Node, Selector};
@@ -18,11 +19,13 @@ pub enum Kind {
     Interactive,
 }
 
-// Old problems read input.txt and write output.txt instead of using stdin and stdout.
+// How the judge runs a solution. Old problems read input.txt and write output.txt instead of
+// using stdin and stdout.
 #[derive(Serialize, Deserialize, Default, Clone)]
-pub struct Files {
+pub struct Rules {
     pub input: Option<String>,
     pub output: Option<String>,
+    pub time: Option<Duration>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -32,7 +35,7 @@ pub struct Statement {
     pub body: String,
     pub samples: Vec<Sample>,
     pub kind: Kind,
-    pub files: Files,
+    pub rules: Rules,
 }
 
 #[derive(Clone, Copy)]
@@ -90,9 +93,10 @@ pub fn parse(html: &str) -> Result<Statement> {
     let memory =
         first_text(statement, ".header .memory-limit").replace("memory limit per test", "");
     let limits = format!("{} · {}", time.trim(), memory.trim());
-    let files = Files {
+    let rules = Rules {
         input: file(&first_text(statement, ".header .input-file"), "input"),
         output: file(&first_text(statement, ".header .output-file"), "output"),
+        time: seconds(&time),
     };
 
     let mut body = String::new();
@@ -129,7 +133,7 @@ pub fn parse(html: &str) -> Result<Statement> {
         body,
         samples,
         kind,
-        files,
+        rules,
     })
 }
 
@@ -202,6 +206,12 @@ fn text(element: ElementRef, whitespace: Whitespace, out: &mut String) {
             | Node::ProcessingInstruction(_) => {}
         }
     }
+}
+
+// The header reads like "2 seconds" or "0.5 seconds".
+fn seconds(text: &str) -> Option<Duration> {
+    let number = text.split_whitespace().next()?.parse::<f64>().ok()?;
+    Some(Duration::from_secs_f64(number))
 }
 
 pub fn comment(prefix: &str, statement: &Statement, url: &str) -> String {
@@ -310,6 +320,7 @@ YES
         let statement = parse(html).unwrap();
         assert_eq!(statement.title, "A. Watermelon");
         assert_eq!(statement.limits, "1 second · 64 megabytes");
+        assert_eq!(statement.rules.time, Some(Duration::from_secs(1)));
         assert!(statement.body.contains("Weight w with 1 ≤ w."));
         assert_eq!(statement.samples.len(), 1);
         assert_eq!(statement.samples[0].input, "2\n3 7\n");

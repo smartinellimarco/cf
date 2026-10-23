@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{Lang, Paths, Quote};
-use crate::statement::Files;
+use crate::statement::Rules;
 
 const BUILD_TIMEOUT: Duration = Duration::from_secs(120);
 const RUN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -34,6 +34,11 @@ pub enum Outcome {
         stderr: String,
     },
     Timeout,
+    // Right answer, but slower than the problem's time limit.
+    Slow {
+        elapsed: Duration,
+        limit: Duration,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -54,7 +59,10 @@ impl Report {
                 for (_, outcome) in outcomes {
                     match outcome {
                         Outcome::Pass { .. } => {}
-                        Outcome::Wrong { .. } | Outcome::Crash { .. } | Outcome::Timeout => {
+                        Outcome::Wrong { .. }
+                        | Outcome::Crash { .. }
+                        | Outcome::Timeout
+                        | Outcome::Slow { .. } => {
                             return false;
                         }
                     }
@@ -79,7 +87,7 @@ struct Finished {
 }
 
 // Setting `cancel` kills whatever is running and makes the rest return at once.
-pub fn check(paths: &Paths, lang: &Lang, files: &Files, cancel: &AtomicBool) -> Result<Report> {
+pub fn check(paths: &Paths, lang: &Lang, rules: &Rules, cancel: &AtomicBool) -> Result<Report> {
     let dir = paths.samples.as_path();
     // Commands run inside build/ so whatever a compiler drops in its working directory stays ignored.
     let cwd = paths.build.as_path();
@@ -104,14 +112,14 @@ pub fn check(paths: &Paths, lang: &Lang, files: &Files, cancel: &AtomicBool) -> 
     for k in samples {
         let input = dir.join(format!("in{k}.txt"));
         let expected = std::fs::read_to_string(dir.join(format!("ans{k}.txt")))?;
-        let stdin = match &files.input {
+        let stdin = match &rules.input {
             Some(name) => {
                 std::fs::copy(&input, cwd.join(name))?;
                 Stdio::null()
             }
             None => Stdio::from(File::open(&input)?),
         };
-        if let Some(name) = &files.output {
+        if let Some(name) = &rules.output {
             let _ = std::fs::remove_file(cwd.join(name));
         }
         let outcome = match sh(cwd, &run, stdin, RUN_TIMEOUT, cancel)? {
@@ -128,18 +136,21 @@ pub fn check(paths: &Paths, lang: &Lang, files: &Files, cancel: &AtomicBool) -> 
                 stdout,
                 ..
             }) => {
-                let got = match &files.output {
+                let got = match &rules.output {
                     Some(name) => std::fs::read_to_string(cwd.join(name)).unwrap_or_default(),
                     None => stdout,
                 };
-                if same_tokens(&got, &expected) {
-                    Outcome::Pass { elapsed }
-                } else {
+                let too_slow = rules.time.filter(|limit| elapsed > *limit);
+                if !same_tokens(&got, &expected) {
                     Outcome::Wrong {
                         elapsed,
                         expected,
                         got,
                     }
+                } else if let Some(limit) = too_slow {
+                    Outcome::Slow { elapsed, limit }
+                } else {
+                    Outcome::Pass { elapsed }
                 }
             }
         };

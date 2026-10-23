@@ -10,13 +10,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{Lang, Paths};
 use crate::run::{self, Report};
-use crate::statement::Files;
+use crate::statement::Rules;
 
 // `key` names the source file, like 4A.cpp, so two implementations of a problem never collide.
 pub struct Job {
     pub key: String,
     pub paths: Paths,
-    pub files: Files,
+    pub rules: Rules,
     pub lang: Lang,
 }
 
@@ -132,8 +132,8 @@ fn work(shared: &Shared, results: &Path, done: &Sender<Done>) {
             }
         };
 
-        let hash = hash(&job.paths, &job.lang, &job.files);
-        let report = match run::check(&job.paths, &job.lang, &job.files, &cancel) {
+        let hash = hash(&job.paths, &job.lang, &job.rules);
+        let report = match run::check(&job.paths, &job.lang, &job.rules, &cancel) {
             Ok(report) => report,
             Err(error) => Report::Failed(format!("{error:#}")),
         };
@@ -165,7 +165,7 @@ fn work(shared: &Shared, results: &Path, done: &Sender<Done>) {
 }
 
 // Covers everything a run depends on, so an unchanged hash means the old result still holds.
-pub fn hash(paths: &Paths, lang: &Lang, files: &Files) -> Result<String> {
+pub fn hash(paths: &Paths, lang: &Lang, rules: &Rules) -> Result<String> {
     let mut hasher = blake3::Hasher::new();
     let mut part = |bytes: &[u8]| {
         hasher.update(&(bytes.len() as u64).to_le_bytes());
@@ -173,8 +173,9 @@ pub fn hash(paths: &Paths, lang: &Lang, files: &Files) -> Result<String> {
     };
     part(lang.build.as_bytes());
     part(lang.run.as_bytes());
-    part(files.input.as_deref().unwrap_or_default().as_bytes());
-    part(files.output.as_deref().unwrap_or_default().as_bytes());
+    part(rules.input.as_deref().unwrap_or_default().as_bytes());
+    part(rules.output.as_deref().unwrap_or_default().as_bytes());
+    part(&rules.time.unwrap_or_default().as_nanos().to_le_bytes());
     part(&std::fs::read(&paths.source)?);
     for k in run::samples(&paths.samples)? {
         part(&std::fs::read(paths.samples.join(format!("in{k}.txt")))?);
