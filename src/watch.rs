@@ -37,6 +37,9 @@ const EMPTY: &str = "\u{f09df}";
 // cli-spinners' dotsCircle, two columns wide like a grid cell with its gap.
 const SPINNER: [&str; 8] = ["⢎ ", "⠎⠁", "⠊⠑", "⠈⠱", " ⡱", "⢀⡰", "⢄⡠", "⢆⡀"];
 const SPIN: Duration = Duration::from_millis(80);
+// Goes after a glyph instead of a space: ghostty draws a nerd font glyph two cells wide when the
+// next cell is a plain space, and one cell wide otherwise, like between the cursor's brackets.
+const GAP: &str = "\u{a0}";
 const FLASH: Duration = Duration::from_secs(1);
 const COLUMN_MAX: usize = 40;
 
@@ -683,10 +686,10 @@ impl<'a> Watch<'a> {
                 for (cells, is_current) in chunk {
                     // Every cell takes two columns: a glyph and its gap, or a spinner frame.
                     let cell = cells.get(row).map_or("", String::as_str);
-                    let gap = " ".repeat(2usize.saturating_sub(visible(cell)));
+                    let gap = GAP.repeat(2usize.saturating_sub(visible(cell)));
                     // The cursor's brackets take the gaps around its cell, so nothing shifts.
                     let cursor = *is_current && row == self.row && !cell.is_empty();
-                    if cursor && gap.len() == 1 && line.ends_with(' ') {
+                    if cursor && !gap.is_empty() && (line.ends_with(' ') || line.ends_with(GAP)) {
                         line.pop();
                         let _ = write!(line, "{}{cell}{}", "[".bold(), "]".bold());
                     } else {
@@ -838,7 +841,8 @@ impl<'a> Watch<'a> {
                 .count()
         };
         let unsolved = ids.iter().filter(|id| self.local(id).is_none()).count();
-        let entry = |symbol: String, count: usize, label: &str| format!("{symbol} {count} {label}");
+        let entry =
+            |symbol: String, count: usize, label: &str| format!("{symbol}{GAP}{count} {label}");
         let remote = [
             entry(ring(Mark::Accepted), remote(Mark::Accepted), "accepted"),
             entry(ring(Mark::Rejected), remote(Mark::Rejected), "rejected"),
@@ -848,7 +852,7 @@ impl<'a> Watch<'a> {
                 "compilation error",
             ),
             entry(ring(Mark::Testing), remote(Mark::Testing), "testing"),
-            format!("{} more than five", MORE.dark_grey()),
+            format!("{}{GAP}more than five", MORE.dark_grey()),
         ];
         let local = [
             entry(local_dot(Local::Pass), local(Local::Pass), "pass"),
@@ -1099,20 +1103,26 @@ impl<'a> Watch<'a> {
     fn render(&self) -> Result<()> {
         let (columns, rows) = terminal::size()?;
         let width = usize::from(columns);
-        let mut stdout = std::io::stdout();
-        queue!(
-            stdout,
-            cursor::MoveTo(0, 0),
-            terminal::Clear(terminal::ClearType::All)
-        )?;
         let mut wrapped = Vec::new();
         for line in self.problem(width).lines() {
             wrapped.extend(wrap(line, width));
         }
-        for (at, line) in wrapped.iter().take(usize::from(rows)).enumerate() {
+        // Each frame overwrites the last one in a single synchronized update; clearing the whole
+        // screen first flashes every time the spinner turns.
+        let mut stdout = std::io::stdout();
+        queue!(stdout, terminal::BeginSynchronizedUpdate)?;
+        let shown = wrapped.len().min(usize::from(rows));
+        for (at, line) in wrapped.iter().take(shown).enumerate() {
             queue!(stdout, cursor::MoveTo(0, at as u16))?;
             stdout.write_all(line.as_bytes())?;
+            queue!(stdout, terminal::Clear(terminal::ClearType::UntilNewLine))?;
         }
+        queue!(
+            stdout,
+            cursor::MoveTo(0, shown as u16),
+            terminal::Clear(terminal::ClearType::FromCursorDown),
+            terminal::EndSynchronizedUpdate
+        )?;
         stdout.flush()?;
         Ok(())
     }
