@@ -38,7 +38,7 @@ The samples live in the cache, under `~/.cache/cf/samples/<id>/` as `in<k>.txt` 
 
 The progress grid has a column per problem. Its first row is always local: the result of the solution on screen, green when the samples pass, red when they fail, a filling circle while they run, dim when the problem has no samples, and a small circle when there is no solution here. Above it go your submissions, of any language, newest first: green accepted, red rejected, gray compilation error, yellow still testing, the last five shown and a mark on top when there are older ones. Under the grid, the legend counts how many problems are in each state, over the list or over the grid when there is none. `cf` runs the samples of every solution in the background and reruns only what changed. The grid and the language icons are [Nerd Fonts](https://www.nerdfonts.com/) glyphs, in your terminal's colors.
 
-Keys: `h`/`l` go to the previous or next problem and `j`/`k` move between a column's rows, its local result at the bottom and its submissions above; a popup shows the cell under the cursor (judge, verdict, failing test, time and memory, or your solutions here) and `esc` closes it. `gg`/`ge` go to the first or last problem, `]f`/`[f` to the next or previous one whose newest submission was rejected, `]s`/`[s` accepted, `]t`/`[t` never submitted, `]e`/`[e` failing its samples here. `y` copies the file to submit, `o` opens the submit page, `w` opens the problem on Codeforces, `r` reruns, `s` swaps the solution, `e` starts one, `q` quits.
+Keys: `h`/`l` go to the previous or next problem and `j`/`k` move between a column's rows, its local result at the bottom and its submissions above; a popup shows the cell under the cursor (judge, verdict, failing test, time and memory, or your solutions here) and `esc` closes it. `gg`/`ge` go to the first or last problem, `]f`/`[f` to the next or previous one whose newest submission was rejected, `]s`/`[s` accepted, `]u`/`[u` never submitted, and by the solution here, `]e`/`[e` failing its samples, `]p`/`[p` passing them, `]t`/`[t` with no solution yet. `y` copies the file to submit, `o` opens the submit page, `w` opens the problem on Codeforces, `r` reruns, `s` swaps the solution, `e` starts one, `q` quits.
 
 ## Lists
 
@@ -91,7 +91,7 @@ Edit `templates/main.cpp` to start every solution with your own boilerplate: inc
 "keys+": { "n": "next", "p": "prev" }
 ```
 
-The commands are `next`, `prev`, `up`, `down`, `first`, `last`, `next_failed`, `prev_failed`, `next_solved`, `prev_solved`, `next_untouched`, `prev_untouched`, `next_local_error`, `prev_local_error`, `copy`, `submit`, `web`, `start`, `swap`, `rerun` and `quit`. `esc` closes the popup and `ctrl-c` quits, whatever the keys.
+The commands are `next`, `prev`, `up`, `down`, `first`, `last`, `next_failed`, `prev_failed`, `next_solved`, `prev_solved`, `next_unsubmitted`, `prev_unsubmitted`, `next_local_error`, `prev_local_error`, `next_local_pass`, `prev_local_pass`, `next_untouched`, `prev_untouched`, `copy`, `submit`, `web`, `start`, `swap`, `rerun` and `quit`. `esc` closes the popup and `ctrl-c` quits, whatever the keys.
 
 ## Languages
 
