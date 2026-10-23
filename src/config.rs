@@ -76,6 +76,24 @@ impl Dirs {
     pub fn results(&self, folder: &Path) -> PathBuf {
         self.cache.join("results").join(flat(folder))
     }
+
+    // Builds and results of a solutions folder that was moved or deleted would stay forever.
+    pub fn prune(&self) {
+        for kind in ["build", "results"] {
+            let Ok(entries) = std::fs::read_dir(self.cache.join(kind)) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let name = entry
+                    .file_name()
+                    .to_string_lossy()
+                    .replace('%', std::path::MAIN_SEPARATOR_STR);
+                if !Path::new(&name).is_dir() {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
+            }
+        }
+    }
 }
 
 // Different solution folders must not collide in the cache, so each gets its own subfolder.
