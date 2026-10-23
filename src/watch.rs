@@ -1368,7 +1368,7 @@ impl<'a> Watch<'a> {
 
         lines.extend(self.progress(width));
         lines.push(String::new());
-        lines.extend(center_block(&self.legend(), width));
+        lines.extend(self.legend().iter().map(|line| center(line, width)));
         lines.push(String::new());
 
         // One row for all messages, so the report under it always starts at the same one.
