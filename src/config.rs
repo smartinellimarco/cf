@@ -32,6 +32,7 @@ pub enum Command {
     Down,
     First,
     Last,
+    Center,
     NextFailed,
     PrevFailed,
     NextSolved,
@@ -54,13 +55,14 @@ pub enum Command {
     Quit,
 }
 
-const KEYS: [(&str, Command); 26] = [
+const KEYS: [(&str, Command); 27] = [
     ("l", Command::Next),
     ("h", Command::Prev),
     ("k", Command::Up),
     ("j", Command::Down),
     ("gg", Command::First),
     ("ge", Command::Last),
+    ("zz", Command::Center),
     ("]f", Command::NextFailed),
     ("[f", Command::PrevFailed),
     ("]s", Command::NextSolved),
