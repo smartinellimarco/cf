@@ -25,8 +25,13 @@ const POLL_EVERY: Duration = Duration::from_secs(5);
 const POLL_FOR: Duration = Duration::from_secs(15 * 60);
 // Allows for clock skew between this machine and Codeforces.
 const SLACK_SECONDS: i64 = 30;
-const COLUMNS_PER_BAND: usize = 50;
-const BANDS_SHOWN: usize = 2;
+// The grid is one band as wide as the terminal less a margin on each side, sliding over the list
+// like a vim window: it moves once the cursor gets within SCROLLOFF columns of an edge.
+const MARGIN: usize = 4;
+const SCROLLOFF: usize = 3;
+// Room for the labels (`local ┌ `) and for the counts of problems left and right of the window.
+const LABELS: usize = 8;
+const INDICATOR: usize = 6;
 const ATTEMPTS_SHOWN: usize = 5;
 // nf-md-circle_outline, nf-md-circle and nf-md-dots_vertical.
 const RING: &str = "\u{f0766}";
@@ -203,6 +208,8 @@ pub struct Watch<'a> {
     // When cf started, to step the spinner.
     started: Instant,
     clipboard: Option<arboard::Clipboard>,
+    // The first problem in the grid's window.
+    offset: usize,
     // The last frame drawn and the terminal size it was drawn for.
     frame: Vec<String>,
     size: (u16, u16),
@@ -282,6 +289,7 @@ impl<'a> Watch<'a> {
             updates: None,
             started: Instant::now(),
             clipboard: None,
+            offset: 0,
             frame: Vec::new(),
             size: (0, 0),
             templates: dirs.templates(),
@@ -678,21 +686,14 @@ impl<'a> Watch<'a> {
     // One column per problem with its attempts stacked upwards, newest at the bottom. Also
     // returns the problems on screen, which the legend counts when there is no list.
     fn progress(&self, width: usize) -> Vec<String> {
-        let per_band = (width / 2).clamp(1, COLUMNS_PER_BAND);
+        let shown = per_band(width);
         let mut columns = Vec::new();
-        for (at, id) in self.ids.iter().enumerate() {
+        for (at, id) in self.ids.iter().enumerate().skip(self.offset).take(shown) {
             columns.push((self.column(id), at == self.current));
         }
-        // Fixed bands, so moving shifts the current mark and not the grid.
-        let count = columns.len().div_ceil(per_band);
-        let first = (self.current / per_band)
-            .saturating_sub(BANDS_SHOWN / 2)
-            .min(count.saturating_sub(BANDS_SHOWN));
-        let bands: Vec<&[Column]> = columns
-            .chunks(per_band)
-            .skip(first)
-            .take(BANDS_SHOWN)
-            .collect();
+        let before = self.offset;
+        let after = self.ids.len().saturating_sub(self.offset + shown);
+        let bands: Vec<&[Column]> = vec![&columns];
         let mut cursor = None;
         let mut lines = Vec::new();
         for chunk in bands {
@@ -709,7 +710,16 @@ impl<'a> Watch<'a> {
                     _ if row == ATTEMPTS_SHOWN + 1 => ("", "┌"),
                     _ => ("", "│"),
                 };
-                let mut line = format!("{} {} ", format!("{label:>5}").dim(), edge.dim());
+                let left = match row {
+                    0 if before > 0 => format!("‹ {before}"),
+                    _ => String::new(),
+                };
+                let mut line = format!(
+                    "{} {} {} ",
+                    format!("{left:<w$}", w = INDICATOR - 1).dim(),
+                    format!("{label:>5}").dim(),
+                    edge.dim()
+                );
                 for (cells, is_current) in chunk.iter() {
                     // Every cell takes two columns: a glyph and its gap.
                     let cell = cells.get(row).map_or("", String::as_str);
@@ -727,9 +737,12 @@ impl<'a> Watch<'a> {
                         let _ = write!(line, "{cell}{gap}");
                     }
                 }
+                if row == 0 && after > 0 {
+                    let _ = write!(line, " {}", format!("{after} ›").dim());
+                }
                 band.push(line);
             }
-            let mut base = format!("{} ", "      └".dim());
+            let mut base = format!("{}{} ", " ".repeat(INDICATOR), "      └".dim());
             for (_, is_current) in chunk {
                 let mark = if *is_current {
                     "━".bold()
@@ -754,6 +767,14 @@ impl<'a> Watch<'a> {
         {
             // Above the cursor's row, so neither that row nor the ones below get covered.
             let top = row.saturating_sub(popup.len());
+            // Like a completion menu at the screen's edge, it opens to the left when the right is
+            // too narrow: the cursor's bracket sits three columns before `column`.
+            let wide = popup.iter().map(|line| visible(line)).max().unwrap_or(0);
+            let column = if pad.len() + column + wide > width {
+                column.saturating_sub(3 + wide)
+            } else {
+                column
+            };
             for (at, box_line) in popup.iter().enumerate() {
                 if let Some(line) = lines.get_mut(top + at) {
                     *line = overlay(line, column, box_line);
@@ -1151,12 +1172,26 @@ impl<'a> Watch<'a> {
         changed
     }
 
+    // Keeps the current problem SCROLLOFF columns away from the window's edges, moving the window
+    // only when it has to, so the cursor travels over a still grid.
+    fn scroll(&mut self, width: usize) {
+        let shown = per_band(width);
+        let room = SCROLLOFF.min(shown.saturating_sub(1) / 2);
+        if self.current < self.offset + room {
+            self.offset = self.current.saturating_sub(room);
+        } else if self.current + room + 1 > self.offset + shown {
+            self.offset = self.current + room + 1 - shown;
+        }
+        self.offset = self.offset.min(self.ids.len().saturating_sub(shown));
+    }
+
     // Writes only the lines that changed since the last frame, like a terminal ui's double buffer,
     // inside one synchronized update; rewriting every line each tick makes busy screens flicker.
     fn render(&mut self) -> Result<()> {
         let size = terminal::size()?;
         let (columns, rows) = size;
         let width = usize::from(columns);
+        self.scroll(width);
         let mut lines = Vec::new();
         for line in self.problem(width).lines() {
             lines.extend(wrap(line, width));
@@ -1521,6 +1556,11 @@ fn columns(line: &str) -> Vec<String> {
         last.push_str(&pending);
     }
     columns
+}
+
+// How many problems fit in the grid's window at this width; each takes two columns.
+fn per_band(width: usize) -> usize {
+    (width.saturating_sub(2 * MARGIN + LABELS + 2 * INDICATOR) / 2).max(1)
 }
 
 fn center(line: &str, width: usize) -> String {
