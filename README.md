@@ -83,6 +83,16 @@ The default config comes with the [A2OJ ladders](https://github.com/rishabhdeeps
 
 Edit `templates/main.cpp` to start every solution with your own boilerplate: includes, macros, fast IO. A new language needs its own `templates/main.<ext>`. Solutions already started keep the code they started with.
 
+## Keys
+
+`keys+` in `config.json` adds keys or rebinds some, and `keys` replaces every default key with its own. A key is one or two characters, like `q`, `gg` or `]f`:
+
+```json
+"keys+": { "n": "next", "p": "prev" }
+```
+
+The commands are `next`, `prev`, `up`, `down`, `first`, `last`, `next_failed`, `prev_failed`, `next_solved`, `prev_solved`, `next_untouched`, `prev_untouched`, `next_local_error`, `prev_local_error`, `copy`, `submit`, `web`, `start`, `swap`, `rerun` and `quit`. `esc` closes the popup and `ctrl-c` quits, whatever the keys.
+
 ## Languages
 
 `config.json` says how to build and run each language, and `default_lang` picks the one new solutions use:

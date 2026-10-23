@@ -16,7 +16,62 @@ pub struct Config {
     pub langs: HashMap<String, Lang>,
     #[serde(default)]
     pub lists: HashMap<String, String>,
+    // `keys` replaces the default keys, `keys+` adds to them or rebinds some.
+    keys: Option<HashMap<String, Command>>,
+    #[serde(rename = "keys+", default)]
+    more_keys: HashMap<String, Command>,
 }
+
+// What a key does in the problem view.
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Command {
+    Next,
+    Prev,
+    Up,
+    Down,
+    First,
+    Last,
+    NextFailed,
+    PrevFailed,
+    NextSolved,
+    PrevSolved,
+    NextUntouched,
+    PrevUntouched,
+    NextLocalError,
+    PrevLocalError,
+    Copy,
+    Submit,
+    Web,
+    Start,
+    Swap,
+    Rerun,
+    Quit,
+}
+
+const KEYS: [(&str, Command); 21] = [
+    ("l", Command::Next),
+    ("h", Command::Prev),
+    ("k", Command::Up),
+    ("j", Command::Down),
+    ("gg", Command::First),
+    ("ge", Command::Last),
+    ("]f", Command::NextFailed),
+    ("[f", Command::PrevFailed),
+    ("]s", Command::NextSolved),
+    ("[s", Command::PrevSolved),
+    ("]t", Command::NextUntouched),
+    ("[t", Command::PrevUntouched),
+    ("]e", Command::NextLocalError),
+    ("[e", Command::PrevLocalError),
+    ("y", Command::Copy),
+    ("o", Command::Submit),
+    ("w", Command::Web),
+    ("e", Command::Start),
+    ("s", Command::Swap),
+    ("r", Command::Rerun),
+    ("q", Command::Quit),
+];
 
 #[derive(Deserialize, Clone)]
 pub struct Lang {
@@ -133,6 +188,20 @@ impl Config {
                 check_placeholders(&format!("langs.{name}.{field}"), template)?;
             }
         }
+        let keymap = config.keymap();
+        for key in keymap.keys() {
+            let count = key.chars().count();
+            if count == 0 || count > 2 {
+                bail!("{shown} binds {key:?}, keys are one or two characters like q or gg");
+            }
+            // A key bound alone can't also start a two key binding, it would never wait.
+            if let Some(first) = key.chars().next()
+                && count == 2
+                && keymap.contains_key(&first.to_string())
+            {
+                bail!("{shown} binds both {first:?} and {key:?}, which starts with it");
+            }
+        }
         if !config.langs.contains_key(&config.default_lang) {
             bail!(
                 "{shown} picks default_lang {:?} but langs has no such entry",
@@ -167,6 +236,18 @@ impl Config {
             .with_context(|| format!("writing {}", path.display()))?;
         self.handle = handle;
         Ok(())
+    }
+
+    pub fn keymap(&self) -> HashMap<String, Command> {
+        let mut keymap: HashMap<String, Command> = match &self.keys {
+            Some(keys) => keys.clone(),
+            None => KEYS
+                .iter()
+                .map(|(key, command)| (key.to_string(), *command))
+                .collect(),
+        };
+        keymap.extend(self.more_keys.clone());
+        keymap
     }
 
     pub fn lang_of(&self, source: &Path) -> Option<&Lang> {

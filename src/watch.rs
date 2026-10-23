@@ -13,7 +13,7 @@ use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
 
 use crate::codeforces::{self, Client, Handle, Page, Problem, ProblemId, Submission};
-use crate::config::{Config, Dirs, Lang, Paths, Quote};
+use crate::config::{Command, Config, Dirs, Lang, Paths, Quote};
 use crate::fetch::{Fetched, Fetcher};
 use crate::local;
 use crate::run::{Outcome, Report, Usage};
@@ -191,6 +191,7 @@ pub struct Watch<'a> {
     want: usize,
     popup: bool,
     prefix: Option<char>,
+    keymap: HashMap<String, Command>,
     note: String,
     copied: Option<Instant>,
     verdict: Verdict,
@@ -247,6 +248,7 @@ impl<'a> Watch<'a> {
                 .with_context(|| format!("watching {}", dir.display()))?;
         }
         let results_dir = dirs.results(&root);
+        let keymap = config.keymap();
         let mut watch = Watch {
             fetcher: Fetcher::new(client.clone(), dirs.samples()),
             client,
@@ -269,6 +271,7 @@ impl<'a> Watch<'a> {
             want: 0,
             popup: true,
             prefix: None,
+            keymap,
             note: String::new(),
             copied: None,
             verdict: Verdict::Idle,
@@ -444,41 +447,55 @@ impl<'a> Watch<'a> {
             }
             return Action::Continue;
         };
-        // Motions like gg and ]f take two keys, vim style.
-        if let Some(prefix) = self.prefix.take() {
-            let motion = match (prefix, char) {
-                ('g', 'g') => Motion::First,
-                ('g', 'e') => Motion::Last,
-                (']' | '[', 'f' | 's' | 't' | 'e') => Motion::Find {
-                    forward: prefix == ']',
-                    standing: match char {
-                        'f' => Standing::Failed,
-                        's' => Standing::Solved,
-                        't' => Standing::Untouched,
-                        _ => Standing::LocalError,
-                    },
-                },
-                _ => return Action::Continue,
-            };
-            self.go(motion);
-            return Action::Continue;
+        // Bindings like gg and ]f take two keys, vim style: the first one waits for the second.
+        let typed = match self.prefix.take() {
+            Some(prefix) => format!("{prefix}{char}"),
+            None => char.to_string(),
+        };
+        if let Some(command) = self.keymap.get(&typed).copied() {
+            return self.command(command);
         }
-        match char {
-            'g' | ']' | '[' => self.prefix = Some(char),
-            'l' => self.go(Motion::Next),
-            'h' => self.go(Motion::Prev),
-            'k' => self.climb(1),
-            'j' => self.climb(-1),
-            'q' => return Action::Quit,
-            'y' => self.copy(),
-            'o' => self.submit(),
-            'r' => self.rerun(),
-            's' => self.swap(),
-            'e' => self.start(),
-            'w' => self.browse(),
-            _ => {}
+        if typed.chars().count() == 1 && self.keymap.keys().any(|key| key.starts_with(&typed)) {
+            self.prefix = Some(char);
         }
         Action::Continue
+    }
+
+    fn command(&mut self, command: Command) -> Action {
+        let find = |forward, standing| Motion::Find { forward, standing };
+        match command {
+            Command::Next => self.go(Motion::Next),
+            Command::Prev => self.go(Motion::Prev),
+            Command::Up => self.climb(1),
+            Command::Down => self.climb(-1),
+            Command::First => self.go(Motion::First),
+            Command::Last => self.go(Motion::Last),
+            Command::NextFailed => self.go(find(true, Standing::Failed)),
+            Command::PrevFailed => self.go(find(false, Standing::Failed)),
+            Command::NextSolved => self.go(find(true, Standing::Solved)),
+            Command::PrevSolved => self.go(find(false, Standing::Solved)),
+            Command::NextUntouched => self.go(find(true, Standing::Untouched)),
+            Command::PrevUntouched => self.go(find(false, Standing::Untouched)),
+            Command::NextLocalError => self.go(find(true, Standing::LocalError)),
+            Command::PrevLocalError => self.go(find(false, Standing::LocalError)),
+            Command::Copy => self.copy(),
+            Command::Submit => self.submit(),
+            Command::Web => self.browse(),
+            Command::Start => self.start(),
+            Command::Swap => self.swap(),
+            Command::Rerun => self.rerun(),
+            Command::Quit => return Action::Quit,
+        }
+        Action::Continue
+    }
+
+    // The key shown for a command: the shortest one bound to it, if any.
+    fn key(&self, command: Command) -> Option<String> {
+        self.keymap
+            .iter()
+            .filter(|(_, bound)| **bound == command)
+            .map(|(key, _)| key.clone())
+            .min_by_key(|key| (key.chars().count(), key.clone()))
     }
 
     fn rows(&self) -> usize {
@@ -1308,26 +1325,33 @@ impl<'a> Watch<'a> {
             Some(_) => "copied ✓".green().to_string(),
             None => "copy".to_string(),
         };
-        let actions = prompt(&[
-            ("y", &copy),
-            ("o", "submit"),
-            ("w", "web"),
-            ("e", "start"),
-            ("s", "swap"),
-            ("r", "rerun"),
-            ("q", "quit"),
-        ]);
-        let motions = prompt(&[
-            ("h", "prev"),
-            ("l", &next),
-            ("j/k", "rows"),
-            ("gg", "first"),
-            ("ge", "last"),
-            ("]f", "failed"),
-            ("]s", "solved"),
-            ("]t", "untouched"),
-            ("]e", "local error"),
-        ]);
+        let entries = |commands: &[(Command, &str)]| {
+            commands
+                .iter()
+                .filter_map(|(command, label)| Some((self.key(*command)?, label.to_string())))
+                .collect::<Vec<_>>()
+        };
+        let actions = prompt(&entries(&[
+            (Command::Copy, &copy),
+            (Command::Submit, "submit"),
+            (Command::Web, "web"),
+            (Command::Start, "start"),
+            (Command::Swap, "swap"),
+            (Command::Rerun, "rerun"),
+            (Command::Quit, "quit"),
+        ]));
+        let motions = prompt(&entries(&[
+            (Command::Prev, "prev"),
+            (Command::Next, &next),
+            (Command::Down, "down"),
+            (Command::Up, "up"),
+            (Command::First, "first"),
+            (Command::Last, "last"),
+            (Command::NextFailed, "failed"),
+            (Command::NextSolved, "solved"),
+            (Command::NextUntouched, "untouched"),
+            (Command::NextLocalError, "local error"),
+        ]));
         lines.push(center(&actions, width));
         lines.push(center(&motions, width));
         lines.push(String::new());
@@ -1351,10 +1375,10 @@ impl<'a> Watch<'a> {
     }
 }
 
-fn prompt(keys: &[(&str, &str)]) -> String {
+fn prompt(keys: &[(String, String)]) -> String {
     let mut out = String::new();
     for (key, label) in keys {
-        let _ = write!(out, "{} {label}  ", key.bold());
+        let _ = write!(out, "{} {label}  ", key.as_str().bold());
     }
     out.truncate(out.len() - "  ".len());
     out
