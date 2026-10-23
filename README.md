@@ -30,6 +30,8 @@ Each problem lives in `problems/<id>/`: `main.<ext>` with the statement as a com
 
 `cf` prints the command to open the problem, built from `editor` in the config, e.g. `hx --vsplit {source} {dir}/in1.txt` or `vim -O {source} {dir}/in1.txt`.
 
+The progress grid has a column per problem with your attempts stacked upwards, the last five shown. A ring is a submission: green accepted, red rejected, gray compilation error, yellow still testing, filled when sent from `cf` while the samples passed. A dot on top is the local result newer than your last submission: green when the samples pass, red when they fail, dim while they run. `cf` runs the samples of every problem in the folder in the background and reruns only what changed.
+
 Keys: `y` copies the file to submit, `o` opens the submit page, `l` lists the problems, `n` jumps to the next unsolved one, `r` reruns, `q` quits.
 
 ## Lists

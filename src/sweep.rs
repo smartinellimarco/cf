@@ -8,7 +8,7 @@ use std::thread::JoinHandle;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::codeforces::ProblemId;
+use crate::codeforces::{self, ProblemId};
 use crate::config::{Lang, Paths};
 use crate::run::{self, Outcome, Report};
 use crate::statement::Files;
@@ -29,6 +29,7 @@ pub struct Done {
 pub struct Stored {
     pub hash: String,
     pub passed: bool,
+    pub at: i64,
 }
 
 #[derive(Default)]
@@ -146,7 +147,8 @@ fn work(shared: &Shared, lang: &Lang, results: &Path, done: &Sender<Done>) {
             continue;
         }
         if let (Ok(hash), Some(passed)) = (hash, passed(&report)) {
-            let _ = save(results, &job.id, &Stored { hash, passed });
+            let at = codeforces::now();
+            let _ = save(results, &job.id, &Stored { hash, passed, at });
         }
         let _ = done.send(Done { id: job.id, report });
     }

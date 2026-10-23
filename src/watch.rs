@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -25,8 +25,11 @@ const POLL_FOR: Duration = Duration::from_secs(15 * 60);
 const SLACK_SECONDS: i64 = 30;
 const OUTPUT_LINES: usize = 20;
 const NAME_WIDTH: usize = 40;
-const DOTS_PER_ROW: usize = 50;
-const PROGRESS_ROWS: usize = 4;
+const COLUMNS_PER_BAND: usize = 50;
+const BANDS_SHOWN: usize = 2;
+const ATTEMPTS_SHOWN: usize = 5;
+// Ids of the submissions sent from cf while the samples passed.
+const PASSING: &str = "passing.json";
 const FLASH: Duration = Duration::from_secs(1);
 const COLUMN_MAX: usize = 40;
 
@@ -40,8 +43,22 @@ enum Status {
 
 enum Local {
     Pending,
-    Pass,
-    Fail,
+    Ran { passed: bool, at: i64 },
+}
+
+#[derive(Clone, Copy)]
+enum Mark {
+    Accepted,
+    Rejected,
+    CompilationError,
+    Testing,
+}
+
+struct Attempt {
+    mark: Mark,
+    at: i64,
+    // Sent from cf while the samples passed.
+    passing: bool,
 }
 
 enum View {
@@ -96,7 +113,9 @@ pub struct Watch<'a> {
     config: Config,
     lang: Lang,
     ids: Vec<ProblemId>,
-    statuses: HashMap<ProblemId, Status>,
+    history: HashMap<ProblemId, Vec<Attempt>>,
+    passing: HashSet<u64>,
+    sending: bool,
     catalog: HashMap<ProblemId, Problem>,
     submissions: Vec<Submission>,
     current: usize,
@@ -153,7 +172,9 @@ impl<'a> Watch<'a> {
             config,
             lang,
             ids,
-            statuses: statuses(&submissions),
+            history: HashMap::new(),
+            passing: HashSet::new(),
+            sending: false,
             catalog,
             submissions,
             current: 0,
@@ -178,6 +199,8 @@ impl<'a> Watch<'a> {
             locals: HashMap::new(),
             results,
         };
+        watch.passing = watch.client.load(PASSING).unwrap_or_default();
+        watch.history = history(&watch.submissions, &watch.passing);
         watch.current = match start.and_then(|id| watch.ids.iter().position(|at| *at == id)) {
             Some(at) => at,
             None => watch.next(0),
@@ -363,10 +386,9 @@ impl<'a> Watch<'a> {
             let hash = sweep::hash(&paths, &self.lang, &files).ok();
             match sweep::load(&self.results, &id) {
                 Some(stored) if Some(&stored.hash) == hash.as_ref() => {
-                    let local = if stored.passed {
-                        Local::Pass
-                    } else {
-                        Local::Fail
+                    let local = Local::Ran {
+                        passed: stored.passed,
+                        at: stored.at,
                     };
                     self.locals.insert(id, local);
                 }
@@ -381,8 +403,11 @@ impl<'a> Watch<'a> {
 
     fn finish(&mut self, done: Done) {
         match sweep::passed(&done.report) {
-            Some(true) => self.locals.insert(done.id.clone(), Local::Pass),
-            Some(false) => self.locals.insert(done.id.clone(), Local::Fail),
+            Some(passed) => {
+                let at = codeforces::now();
+                self.locals
+                    .insert(done.id.clone(), Local::Ran { passed, at })
+            }
             None => self.locals.remove(&done.id),
         };
         if done.id == *self.id() {
@@ -435,9 +460,16 @@ impl<'a> Watch<'a> {
         if id.is_gym() {
             return Status::Gym;
         }
-        match self.statuses.get(id) {
-            Some(status) => *status,
-            None => Status::Todo,
+        let Some(attempts) = self.history.get(id) else {
+            return Status::Todo;
+        };
+        if attempts
+            .iter()
+            .any(|attempt| matches!(attempt.mark, Mark::Accepted))
+        {
+            Status::Solved
+        } else {
+            Status::Tried
         }
     }
 
@@ -462,45 +494,100 @@ impl<'a> Watch<'a> {
         true
     }
 
-    // One dot per problem, so the line also shows which ones are solved, tried or pending.
+    // One column per problem with its attempts stacked upwards, oldest at the bottom.
     fn progress(&self, width: usize) -> String {
         const PREFIX: &str = "Progress: ";
-        let per_row = width.saturating_sub(PREFIX.len()).clamp(1, DOTS_PER_ROW);
-        let mut dots = Vec::new();
+        let count = format!("  {}/{}", self.solved(), self.playable());
+        let room = width.saturating_sub(PREFIX.len() + count.len());
+        let per_band = (room / 2).clamp(1, COLUMNS_PER_BAND);
+        let mut columns = Vec::new();
         let mut current = 0;
         for (at, id) in self.ids.iter().enumerate() {
-            let dot = match self.status(id) {
-                Status::Solved => "●".green(),
-                Status::Tried => "●".red(),
-                Status::Todo => "○".dim(),
-                Status::Gym => continue,
-            };
-            let dot = if at == self.current {
-                current = dots.len();
-                dot.underlined().bold()
-            } else {
-                dot
-            };
-            dots.push(dot.to_string());
+            if id.is_gym() {
+                continue;
+            }
+            if at == self.current {
+                current = columns.len();
+            }
+            columns.push((self.column(id), at == self.current));
         }
-        // The whole problemset is thousands of dots, so only the rows around the current one show.
-        let rows = dots.len().div_ceil(per_row);
-        let first = (current / per_row)
-            .saturating_sub(PROGRESS_ROWS / 2)
-            .min(rows.saturating_sub(PROGRESS_ROWS));
-        let shown = dots.chunks(per_row).skip(first).take(PROGRESS_ROWS);
+        // The whole problemset is thousands of columns, so only the bands around the current one show.
+        let bands = columns.len().div_ceil(per_band);
+        let first = (current / per_band)
+            .saturating_sub(BANDS_SHOWN / 2)
+            .min(bands.saturating_sub(BANDS_SHOWN));
         let mut out = String::new();
-        for (row, chunk) in shown.enumerate() {
-            let lead = if row == 0 {
+        for (band, chunk) in columns
+            .chunks(per_band)
+            .enumerate()
+            .skip(first)
+            .take(BANDS_SHOWN)
+        {
+            let height = chunk
+                .iter()
+                .map(|(cells, _)| cells.len())
+                .max()
+                .unwrap_or(0);
+            for row in (0..height).rev() {
+                out.push_str(&" ".repeat(PREFIX.len()));
+                for (cells, _) in chunk {
+                    match cells.get(row) {
+                        Some(cell) => out.push_str(cell),
+                        None => out.push(' '),
+                    }
+                    out.push(' ');
+                }
+                out.push('\n');
+            }
+            let lead = if band == first {
                 PREFIX.to_string()
             } else {
                 " ".repeat(PREFIX.len())
             };
-            let _ = writeln!(out, "{lead}{}", chunk.concat());
+            out.push_str(&lead);
+            for (_, is_current) in chunk {
+                let base = if *is_current {
+                    "━━".bold().to_string()
+                } else {
+                    "──".dim().to_string()
+                };
+                out.push_str(&base);
+            }
+            out.push('\n');
         }
         out.pop();
-        let _ = write!(out, "  {}/{}", self.solved(), self.playable());
+        out.push_str(&count);
         out
+    }
+
+    // Bottom-up cells: the last attempts, then the local result when it is newer than them.
+    fn column(&self, id: &ProblemId) -> Vec<String> {
+        let mut cells = Vec::new();
+        let attempts = self.history.get(id).map_or(&[][..], Vec::as_slice);
+        for attempt in attempts {
+            let ring = if attempt.passing { "◉" } else { "○" };
+            let ring = match attempt.mark {
+                Mark::Accepted => ring.green(),
+                Mark::Rejected => ring.red(),
+                Mark::CompilationError => ring.dark_grey(),
+                Mark::Testing => ring.yellow(),
+            };
+            cells.push(ring.to_string());
+        }
+        let last = attempts.last().map_or(i64::MIN, |attempt| attempt.at);
+        match self.locals.get(id) {
+            Some(Local::Pending) => cells.push("•".dim().to_string()),
+            Some(Local::Ran { passed, at }) if *at > last => {
+                let dot = if *passed { "•".green() } else { "•".red() };
+                cells.push(dot.to_string());
+            }
+            Some(Local::Ran { .. }) | None => {}
+        }
+        if cells.len() > ATTEMPTS_SHOWN {
+            cells.drain(..cells.len() - (ATTEMPTS_SHOWN - 1));
+            cells.push("⋮".dim().to_string());
+        }
+        cells
     }
 
     fn playable(&self) -> usize {
@@ -646,6 +733,10 @@ impl<'a> Watch<'a> {
     fn expect(&mut self) {
         if self.updates.is_none() {
             let (sender, updates) = mpsc::channel();
+            self.sending = matches!(
+                self.locals.get(self.id()),
+                Some(Local::Ran { passed: true, .. })
+            );
             let client = self.client.clone();
             let handle = self.config.handle.clone();
             let id = self.id().clone();
@@ -674,9 +765,15 @@ impl<'a> Watch<'a> {
         let changed = !received.is_empty();
         for (verdict, submission) in received {
             self.verdict = verdict;
-            self.submissions.extend(submission);
+            if let Some(submission) = submission {
+                if self.sending {
+                    self.passing.insert(submission.id);
+                    let _ = self.client.save(PASSING, &self.passing);
+                }
+                self.submissions.push(submission);
+            }
         }
-        self.statuses = statuses(&self.submissions);
+        self.history = history(&self.submissions, &self.passing);
         changed
     }
 
@@ -712,7 +809,17 @@ impl<'a> Watch<'a> {
     }
 
     fn list(&self, cursor: usize, rows: usize, width: usize) -> (String, String) {
-        let visible = rows.saturating_sub(3).max(1);
+        let footer = format!(
+            "{}\n{}",
+            self.progress(width),
+            hotkeys(&[
+                ("j/k", "down/up"),
+                ("g/G", "first/last"),
+                ("c", "continue at"),
+                ("q", "quit list"),
+            ])
+        );
+        let visible = rows.saturating_sub(footer.lines().count() + 1).max(1);
         let top = cursor
             .saturating_sub(visible / 2)
             .min(self.ids.len().saturating_sub(visible));
@@ -742,8 +849,8 @@ impl<'a> Watch<'a> {
                 Status::Gym => "GYM    ".dim(),
             };
             let local = match self.locals.get(id) {
-                Some(Local::Pass) => "✓".green(),
-                Some(Local::Fail) => "✗".red(),
+                Some(Local::Ran { passed: true, .. }) => "✓".green(),
+                Some(Local::Ran { passed: false, .. }) => "✗".red(),
                 Some(Local::Pending) => "·".dim(),
                 None => " ".stylize(),
             };
@@ -757,16 +864,6 @@ impl<'a> Watch<'a> {
                 let _ = writeln!(body, "  {row}");
             }
         }
-        let footer = format!(
-            "{}\n{}",
-            self.progress(width),
-            hotkeys(&[
-                ("j/k", "down/up"),
-                ("g/G", "first/last"),
-                ("c", "continue at"),
-                ("q", "quit list"),
-            ])
-        );
         (body, footer)
     }
 
@@ -1010,22 +1107,28 @@ fn wrap(line: &str, width: usize) -> Vec<String> {
     rows
 }
 
-fn statuses(submissions: &[Submission]) -> HashMap<ProblemId, Status> {
-    let mut statuses = HashMap::new();
+fn history(submissions: &[Submission], passing: &HashSet<u64>) -> HashMap<ProblemId, Vec<Attempt>> {
+    let mut history: HashMap<ProblemId, Vec<Attempt>> = HashMap::new();
     for submission in submissions {
         let Some(id) = submission.problem.id() else {
             continue;
         };
-        let status = match submission.verdict.as_deref() {
-            Some("OK") => Status::Solved,
-            _ => Status::Tried,
+        let mark = match submission.verdict.as_deref() {
+            Some("OK") => Mark::Accepted,
+            Some("COMPILATION_ERROR") => Mark::CompilationError,
+            None | Some("TESTING") => Mark::Testing,
+            Some(_) => Mark::Rejected,
         };
-        let entry = statuses.entry(id).or_insert(status);
-        if let Status::Solved = status {
-            *entry = status;
-        }
+        history.entry(id).or_default().push(Attempt {
+            mark,
+            at: submission.creation_time_seconds,
+            passing: passing.contains(&submission.id),
+        });
     }
-    statuses
+    for attempts in history.values_mut() {
+        attempts.sort_by_key(|attempt| attempt.at);
+    }
+    history
 }
 
 // Runs on its own thread so a slow or missing connection never blocks the screen.
