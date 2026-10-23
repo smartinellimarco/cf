@@ -671,13 +671,12 @@ impl<'a> Watch<'a> {
             .skip(first)
             .take(BANDS_SHOWN)
             .collect();
-        let popup = self.popup_lines();
-        let mut top = 0;
+        let mut cursor = None;
         let mut lines = Vec::new();
         for chunk in bands {
-            let here = chunk.iter().any(|(_, is_current)| *is_current);
             let mut band = Vec::new();
             // Always the full height, so what comes below never moves.
+            let mut cursor_at = None;
             for row in (0..=ATTEMPTS_SHOWN + 1).rev() {
                 // Two brackets with their tips toward the cells: cf's rows, then local's row that
                 // closes on the baseline.
@@ -688,12 +687,16 @@ impl<'a> Watch<'a> {
                     _ => ("", "│"),
                 };
                 let mut line = format!("{} {} ", format!("{label:>5}").dim(), edge.dim());
-                for (cells, is_current) in chunk {
+                for (cells, is_current) in chunk.iter() {
                     // Every cell takes two columns: a glyph and its gap, or a spinner frame.
                     let cell = cells.get(row).map_or("", String::as_str);
                     let gap = GAP.repeat(2usize.saturating_sub(visible(cell)));
                     // The cursor's brackets take the gaps around its cell, so nothing shifts.
                     let cursor = *is_current && row == self.row && !cell.is_empty();
+                    if cursor {
+                        // Where the popup hangs: right after the closing bracket.
+                        cursor_at = Some((band.len(), visible(&line) + 2));
+                    }
                     if cursor && !gap.is_empty() && (line.ends_with(' ') || line.ends_with(GAP)) {
                         line.pop();
                         let _ = write!(line, "{}{cell}{}", "[".bold(), "]".bold());
@@ -713,24 +716,31 @@ impl<'a> Watch<'a> {
                 let _ = write!(base, "{mark} ");
             }
             band.push(base);
-            if here {
-                // The popup's middle sits at the cursor's row.
-                let cursor = lines.len() + ATTEMPTS_SHOWN + 1 - self.row;
-                top = cursor
-                    .saturating_sub(popup.len() / 2)
-                    .min(lines.len() + band.len().saturating_sub(popup.len()));
+            if let Some((row, column)) = cursor_at {
+                cursor = Some((lines.len() + row, column));
             }
             lines.extend(band);
         }
-        // The grid centers on its own and the popup overlays it on the right, so opening or
-        // closing it never moves the grid.
-        let mut lines = center_block(&lines, width);
-        for (at, box_line) in popup.iter().enumerate() {
-            if let Some(line) = lines.get_mut(top + at) {
-                let _ = write!(line, " {box_line}");
+        // The grid centers on its own width; the popup is then painted over it like a completion
+        // menu: next to the cursor, opening downwards, or upwards when it doesn't fit below.
+        let widest = lines.iter().map(|line| visible(line)).max().unwrap_or(0);
+        let pad = " ".repeat(width.saturating_sub(widest) / 2);
+        let popup = self.popup_lines();
+        if let Some((row, column)) = cursor
+            && !popup.is_empty()
+        {
+            let top = if row + popup.len() <= lines.len() {
+                row
+            } else {
+                (row + 1).saturating_sub(popup.len())
+            };
+            for (at, box_line) in popup.iter().enumerate() {
+                if let Some(line) = lines.get_mut(top + at) {
+                    *line = overlay(line, column, box_line);
+                }
             }
         }
-        lines
+        lines.iter().map(|line| format!("{pad}{line}")).collect()
     }
 
     // What the cell under the cursor knows, in a box; nothing for an empty cell or after esc.
@@ -1427,6 +1437,38 @@ fn local_dot(local: Local) -> String {
         Local::NoSamples => DOT.dim(),
     };
     dot.to_string()
+}
+
+// Paints `top` over `line` from display column `at`, keeping what lies before and after it.
+fn overlay(line: &str, at: usize, top: &str) -> String {
+    let columns = columns(line);
+    let mut out: String = columns.iter().take(at).map(String::as_str).collect();
+    out.push_str(&" ".repeat(at.saturating_sub(columns.len())));
+    // Resets around the box, so neither side's colors bleed into the other.
+    let _ = write!(out, "\x1b[0m{top}\x1b[0m");
+    for column in columns.iter().skip(at + visible(top)) {
+        out.push_str(column);
+    }
+    out
+}
+
+// Splits a styled line into its display columns, each carrying the escapes that precede it.
+fn columns(line: &str) -> Vec<String> {
+    let mut columns = Vec::new();
+    let mut pending = String::new();
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        pending.push(c);
+        if c == '\x1b' {
+            skip_escape(&mut chars, &mut pending);
+        } else {
+            columns.push(std::mem::take(&mut pending));
+        }
+    }
+    if let Some(last) = columns.last_mut() {
+        last.push_str(&pending);
+    }
+    columns
 }
 
 fn center(line: &str, width: usize) -> String {
