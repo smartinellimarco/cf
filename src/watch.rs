@@ -1358,22 +1358,13 @@ impl<'a> Watch<'a> {
             (Command::Up, "up"),
             (Command::First, "first"),
             (Command::Last, "last"),
-        ]));
-        let remote = prompt(&entries(&[
             (Command::NextFailed, "failed"),
             (Command::NextSolved, "solved"),
             (Command::NextUnsubmitted, "unsubmitted"),
-        ]));
-        let local = prompt(&entries(&[
             (Command::NextLocalError, "error"),
             (Command::NextLocalPass, "pass"),
             (Command::NextUntouched, "untouched"),
         ]));
-        let motions = format!(
-            "{motions}   {} {remote}   {} {local}",
-            "cf".dim(),
-            "local".dim()
-        );
         lines.push(center(&actions, width));
         lines.push(center(&motions, width));
         lines.push(String::new());
