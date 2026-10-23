@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crossterm::style::{Color, StyledContent, Stylize};
+use crossterm::style::{Color, Stylize};
 use crossterm::{cursor, execute, queue, terminal};
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
@@ -38,8 +38,6 @@ const DOT: &str = "\u{f0765}";
 const MORE: &str = "\u{f01d9}";
 // nf-md-circle_small, for a problem with nothing to show yet.
 const EMPTY: &str = "\u{f09df}";
-// nf-md-checkbox_multiple_blank_circle, the local dot of a problem with several solutions.
-const MANY: &str = "\u{f063b}";
 // Four braille dots in the middle of the cell, the missing one going round clockwise.
 const SPINNER: [&str; 4] = ["⠴", "⠦", "⠖", "⠲"];
 const SPIN: Duration = Duration::from_millis(120);
@@ -207,8 +205,9 @@ pub struct Watch<'a> {
     // When cf started, to step the spinner.
     started: Instant,
     clipboard: Option<arboard::Clipboard>,
-    // The first problem in the grid's window.
+    // The first problem in the grid's window, and whether zz asked to center it.
     offset: usize,
+    center: bool,
     // The last frame drawn and the terminal size it was drawn for.
     frame: Vec<String>,
     size: (u16, u16),
@@ -289,6 +288,7 @@ impl<'a> Watch<'a> {
             started: Instant::now(),
             clipboard: None,
             offset: 0,
+            center: false,
             frame: Vec::new(),
             size: (0, 0),
             templates: dirs.templates(),
@@ -501,6 +501,7 @@ impl<'a> Watch<'a> {
             Command::Rerun => self.rerun(),
             // A toggle that stays as left, so moving never reopens what you closed.
             Command::Info => self.popup = !self.popup,
+            Command::Center => self.center = true,
             Command::Quit => return Action::Quit,
         }
         Action::Continue
@@ -909,10 +910,6 @@ impl<'a> Watch<'a> {
                 .count()
         };
         let unsolved = ids.iter().filter(|id| self.local(id).is_none()).count();
-        let several = ids
-            .iter()
-            .filter(|id| self.files.get(id).is_some_and(|files| files.len() > 1))
-            .count();
         let entry =
             |symbol: String, count: usize, label: &str| format!("{symbol}{GAP}{count} {label}");
         let remote = [
@@ -936,7 +933,6 @@ impl<'a> Watch<'a> {
                 "no samples",
             ),
             entry(EMPTY.dark_grey().to_string(), unsolved, "no solution"),
-            entry(MANY.dim().to_string(), several, "several solutions"),
         ];
         vec![remote.join("  "), local.join("  ")]
     }
@@ -1011,9 +1007,8 @@ impl<'a> Watch<'a> {
     // above it the attempts newest first, so the mark for older hidden ones sits on top.
     // Rings are submissions and the filled circle is the local result, all nerd font glyphs.
     fn column(&self, id: &ProblemId) -> Vec<String> {
-        let several = self.files.get(id).is_some_and(|files| files.len() > 1);
         let mut cells = vec![match self.local(id) {
-            Some(local) => self.local_cell(local, several),
+            Some(local) => self.local_cell(local),
             None => EMPTY.dark_grey().to_string(),
         }];
         let attempts = self.history.get(id).map_or(&[][..], Vec::as_slice);
@@ -1027,15 +1022,12 @@ impl<'a> Watch<'a> {
     }
 
     // A running solution spins through a circle filling up.
-    fn local_cell(&self, local: Local, several: bool) -> String {
+    fn local_cell(&self, local: Local) -> String {
         match local {
             Local::Running => {
                 let frame = self.started.elapsed().as_millis() / SPIN.as_millis();
                 let at = frame as usize % SPINNER.len();
                 SPINNER[at].dark_grey().to_string()
-            }
-            Local::Pass | Local::Fail | Local::NoSamples if several => {
-                paint(MANY, local).to_string()
             }
             Local::Pass | Local::Fail | Local::NoSamples => local_dot(local),
         }
@@ -1199,6 +1191,10 @@ impl<'a> Watch<'a> {
     // only when it has to, so the cursor travels over a still grid.
     fn scroll(&mut self, width: usize) {
         let shown = self.per_band(width);
+        // zz puts the current problem in the middle, or as near as the list's ends allow.
+        if std::mem::take(&mut self.center) {
+            self.offset = self.current.saturating_sub(shown / 2);
+        }
         let room = SCROLLOFF.min(shown.saturating_sub(1) / 2);
         if self.current < self.offset + room {
             self.offset = self.current.saturating_sub(room);
@@ -1419,6 +1415,7 @@ impl<'a> Watch<'a> {
             (Command::Up, "up"),
             (Command::First, "first"),
             (Command::Last, "last"),
+            (Command::Center, "center"),
             (Command::NextFailed, "failed"),
             (Command::NextSolved, "solved"),
             (Command::NextUnsubmitted, "unsubmitted"),
@@ -1534,19 +1531,13 @@ fn ring(mark: Mark) -> String {
 }
 
 fn local_dot(local: Local) -> String {
-    match local {
-        Local::Running => SPINNER[0].dark_grey().to_string(),
-        Local::Pass | Local::Fail | Local::NoSamples => paint(DOT, local).to_string(),
-    }
-}
-
-fn paint(glyph: &str, local: Local) -> StyledContent<&str> {
-    match local {
-        Local::Pass => glyph.green(),
-        Local::Fail => glyph.red(),
-        Local::Running => glyph.dark_grey(),
-        Local::NoSamples => glyph.dim(),
-    }
+    let dot = match local {
+        Local::Pass => DOT.green(),
+        Local::Fail => DOT.red(),
+        Local::Running => SPINNER[0].dark_grey(),
+        Local::NoSamples => DOT.dim(),
+    };
+    dot.to_string()
 }
 
 // Paints `top` over `line` from display column `at`, keeping what lies before and after it.
