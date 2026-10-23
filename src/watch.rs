@@ -25,9 +25,8 @@ const POLL_EVERY: Duration = Duration::from_secs(5);
 const POLL_FOR: Duration = Duration::from_secs(15 * 60);
 // Allows for clock skew between this machine and Codeforces.
 const SLACK_SECONDS: i64 = 30;
-const REPORT_LINES: usize = 12;
-// Notes and the verdict keep their own rows, wherever the report ends.
-const MESSAGE_LINES: usize = 3;
+// Notes and the verdict keep their own rows, so the report under them always starts at the same one.
+const MESSAGE_LINES: usize = 2;
 const NAME_WIDTH: usize = 40;
 const COLUMNS_PER_BAND: usize = 50;
 const BANDS_SHOWN: usize = 2;
@@ -1292,33 +1291,10 @@ impl<'a> Watch<'a> {
 
     // Like rustlings the view flows top to bottom, and the report keeps a fixed height so
     // nothing below it moves when it changes. Every line is centered.
+    // Everything with a fixed height goes first and the report, which grows with what it shows,
+    // goes last, so nothing moves and no space is reserved for it. Every line is centered.
     fn problem(&self, width: usize) -> (String, String) {
-        let mut messages: Vec<String> = self.messages().iter().map(|m| center(m, width)).collect();
-        messages.resize(MESSAGE_LINES, String::new());
-        let (head, details) = self.report();
-        let mut report: Vec<String> = head.iter().map(|line| center(line, width)).collect();
-        if !details.is_empty() {
-            report.push(String::new());
-            report.extend(center_block(&details, width));
-        }
         let mut lines = Vec::new();
-        for line in report {
-            lines.extend(wrap(&line, width));
-        }
-        if lines.len() > REPORT_LINES {
-            lines.truncate(REPORT_LINES - 1);
-            lines.push(center(&"…".dim().to_string(), width));
-        }
-        lines.resize(REPORT_LINES, String::new());
-
-        let grid = self.progress(width);
-        lines.extend(center_block(&grid, width));
-        lines.push(String::new());
-        lines.extend(messages);
-        lines.push(String::new());
-        lines.extend(center_block(&self.legend(), width));
-        lines.push(String::new());
-
         let id = self.id();
         let url = id.url(Page::Problem);
         let mut title = id.to_string();
@@ -1391,6 +1367,24 @@ impl<'a> Watch<'a> {
         ]);
         lines.push(center(&actions, width));
         lines.push(center(&motions, width));
+        lines.push(String::new());
+
+        lines.extend(center_block(&self.progress(width), width));
+        lines.push(String::new());
+        lines.extend(center_block(&self.legend(), width));
+        lines.push(String::new());
+
+        let mut messages: Vec<String> = self.messages().iter().map(|m| center(m, width)).collect();
+        messages.resize(MESSAGE_LINES, String::new());
+        lines.extend(messages);
+        lines.push(String::new());
+
+        let (head, details) = self.report();
+        lines.extend(head.iter().map(|line| center(line, width)));
+        if !details.is_empty() {
+            lines.push(String::new());
+            lines.extend(center_block(&details, width));
+        }
         (lines.join("\n"), String::new())
     }
 }
