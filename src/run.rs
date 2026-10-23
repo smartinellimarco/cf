@@ -37,6 +37,8 @@ pub enum Outcome {
 
 #[derive(Serialize, Deserialize)]
 pub enum Report {
+    Downloading,
+    NoSolution,
     Building,
     Failed(String),
     BuildFailed(String),
@@ -58,9 +60,12 @@ impl Report {
                 }
                 true
             }
-            Report::Building | Report::Failed(_) | Report::BuildFailed(_) | Report::NoSamples => {
-                false
-            }
+            Report::Downloading
+            | Report::NoSolution
+            | Report::Building
+            | Report::Failed(_)
+            | Report::BuildFailed(_)
+            | Report::NoSamples => false,
         }
     }
 }

@@ -30,7 +30,7 @@ Without a list, `cf` walks a line in id order: the problems you submitted to, th
 
 Gym problems and anything outside the Codeforces problemset are left out.
 
-A solution is a file named `<id>.<ext>`, like `4A.cpp`, anywhere under the solutions folder; `.gitignore`, `.ignore` and hidden files are skipped. New ones start in the folder itself with the statement as a comment on top, and you can move them anywhere after. A problem can have one solution per language, and with the same name twice the most recently edited one counts. Solved and tried come from your Codeforces submissions; the files only say how your samples do.
+A solution is a file named `<id>.<ext>`, like `4A.cpp`, anywhere under the solutions folder; `.gitignore`, `.ignore` and hidden files are skipped. Moving between problems only downloads their statements and samples; `e` starts a solution, in the folder itself with the statement as a comment on top, and you can move it anywhere after. A problem can have one solution per language, and with the same name twice the most recently edited one counts. Solved and tried come from your Codeforces submissions; the files only say how your samples do.
 
 The samples live in the cache, under `~/.cache/cf/samples/<id>/` as `in<k>.txt` and `ans<k>.txt`. Add your own cases there with the next free `k`; they go away with the cache. Old problems that read `input.txt` and write `output.txt` get their samples through those files, and `cf` says so on screen.
 
@@ -38,7 +38,7 @@ The samples live in the cache, under `~/.cache/cf/samples/<id>/` as `in<k>.txt` 
 
 The progress grid has a column per problem with your submissions stacked upwards, the last five shown. It counts solved over the list, or over the problems you tried when there is no list. A ring is a submission, of any language: green accepted, red rejected, gray compilation error, yellow still testing. A dot on top is the local result of the solution on screen when it is newer than your last submission: green when the samples pass, red when they fail, dim while they run. A cross on the baseline marks a problem with solutions in several languages, and `s` swaps between them. `cf` runs the samples of every solution in the background and reruns only what changed.
 
-Keys: `n`/`p` go to the next or previous problem, `gg`/`ge` to the first or last, `]f`/`[f` to the next or previous failed one, `]s`/`[s` solved, `]t`/`[t` untouched. `y` copies the file to submit, `o` opens the submit page, `l` lists the problems (the same motions move the cursor, `c` opens the one under it), `r` reruns, `s` swaps the solution, `q` quits.
+Keys: `n`/`p` go to the next or previous problem, `gg`/`ge` to the first or last, `]f`/`[f` to the next or previous failed one, `]s`/`[s` solved, `]t`/`[t` untouched. `y` copies the file to submit, `o` opens the submit page, `l` lists the problems (the same motions move the cursor, `c` opens the one under it), `r` reruns, `s` swaps the solution, `e` starts one, `q` quits.
 
 ## Lists
 

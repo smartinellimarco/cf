@@ -176,7 +176,11 @@ pub fn passed(report: &Report) -> Option<bool> {
                 .all(|(_, outcome)| matches!(outcome, Outcome::Pass { .. })),
         ),
         Report::BuildFailed(_) => Some(false),
-        Report::Building | Report::Failed(_) | Report::NoSamples => None,
+        Report::Downloading
+        | Report::NoSolution
+        | Report::Building
+        | Report::Failed(_)
+        | Report::NoSamples => None,
     }
 }
 

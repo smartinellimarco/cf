@@ -14,9 +14,10 @@ use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
 
 use crate::codeforces::{self, Client, Handle, Page, Problem, ProblemId, Submission};
 use crate::config::{Config, Dirs, Lang, Paths, Quote};
+use crate::fetch::{Fetched, Fetcher};
 use crate::local;
 use crate::run::{Outcome, Report};
-use crate::statement::{self, Files, Kind, Statement};
+use crate::statement::{self, Files, Statement};
 use crate::sweep::{self, Done, Job, Runner};
 
 const TICK: Duration = Duration::from_millis(100);
@@ -155,6 +156,9 @@ pub struct Watch<'a> {
     before: Vec<String>,
     files: Files,
     runner: Runner,
+    fetcher: Fetcher,
+    // The statement on screen, once downloaded; starting a solution copies it on top.
+    statement: Option<Statement>,
     // Local implementations per problem, newest first, and which one is on screen.
     sources: HashMap<ProblemId, Vec<PathBuf>>,
     active: HashMap<ProblemId, usize>,
@@ -192,6 +196,7 @@ impl<'a> Watch<'a> {
         })
         .context("starting the file watcher")?;
         let results = dirs.results(&root);
+        let fetcher = Fetcher::new(client.clone(), dirs.samples());
         let sources = local::find(&root, &config);
         let mut watch = Watch {
             client,
@@ -223,6 +228,8 @@ impl<'a> Watch<'a> {
             before: Vec::new(),
             files: Files::default(),
             runner: Runner::new(results.clone()),
+            fetcher,
+            statement: None,
             sources,
             active: HashMap::new(),
             lang,
@@ -306,6 +313,20 @@ impl<'a> Watch<'a> {
                 dirty = true;
             }
 
+            let fetched: Vec<Fetched> = self.fetcher.done.try_iter().collect();
+            for Fetched { id, statement } in fetched {
+                if id != *self.id() {
+                    continue;
+                }
+                match statement {
+                    Ok(statement) => self.ready(statement),
+                    Err(error) => {
+                        self.report = Report::Failed(format!("{error}, press r to retry"))
+                    }
+                }
+                dirty = true;
+            }
+
             let done: Vec<Done> = self.runner.done.try_iter().collect();
             for done in done {
                 self.finish(done);
@@ -376,6 +397,7 @@ impl<'a> Watch<'a> {
                 self.open();
             }
             ('s', View::Problem) => self.swap(),
+            ('e', View::Problem) => self.start(),
             _ => {}
         }
         Action::Continue
@@ -471,8 +493,9 @@ impl<'a> Watch<'a> {
         let files = if id == self.id() {
             self.files.clone()
         } else {
-            self.client
-                .load(&format!("statements/{id}.json"))
+            let statement: Option<Statement> = self.client.load(&format!("statements/{id}.json"));
+            statement
+                .map(|statement| statement.files)
                 .unwrap_or_default()
         };
         Job {
@@ -545,15 +568,22 @@ impl<'a> Watch<'a> {
     }
 
     // The source relative to where cf runs, for the commands shown on screen.
-    fn shown(&self) -> Option<Paths> {
-        let source = self.source()?;
-        let mut paths = self.paths(self.id(), source);
+    // Without a solution yet, the paths are those of the one e would start.
+    fn shown(&self) -> Paths {
+        let source = match self.source() {
+            Some(source) => source.clone(),
+            None => {
+                let ext = &self.config.langs[&self.new_lang()].ext;
+                self.root.join(format!("{}.{ext}", self.id()))
+            }
+        };
+        let mut paths = self.paths(self.id(), &source);
         if let Ok(cwd) = std::env::current_dir()
             && let Ok(relative) = source.strip_prefix(&cwd)
         {
             paths.source = relative.to_path_buf();
         }
-        Some(paths)
+        paths
     }
 
     fn entries(&self) -> Vec<String> {
@@ -747,54 +777,46 @@ impl<'a> Watch<'a> {
         self.strays.clear();
         self.verdict = Verdict::Idle;
         self.updates = None;
-        match self.prepare() {
+        for old in self.watched.drain(..) {
+            let _ = self.debouncer.watcher().unwatch(&old);
+        }
+        let id = self.id().clone();
+        let samples = self.samples.join(id.to_string());
+        let cached: Option<Statement> = self
+            .client
+            .load(&format!("statements/{id}.json"))
+            .filter(|_| samples.is_dir());
+        match cached {
+            Some(statement) => self.ready(statement),
+            None => {
+                self.statement = None;
+                self.files = Files::default();
+                self.report = Report::Downloading;
+                self.fetcher.first(id);
+            }
+        }
+    }
+
+    fn ready(&mut self, statement: Statement) {
+        self.files = statement.files.clone();
+        self.statement = Some(statement);
+        if self.source().is_none() {
+            self.report = Report::NoSolution;
+            return;
+        }
+        match self.watch() {
             Ok(()) => self.stale = true,
             Err(error) => self.report = Report::Failed(format!("{error:#}, press r to retry")),
         }
     }
 
-    fn prepare(&mut self) -> Result<()> {
-        let id = self.id().clone();
-        let samples = self.samples.join(id.to_string());
-        let cached = format!("statements/{id}.json");
-        // --lang asks for a solution in that language even when the problem has others.
-        let lang = self.lang.take();
-        let wanted = match &lang {
-            Some(name) => !self.sources.get(&id).is_some_and(|sources| {
-                sources.iter().any(|source| {
-                    source.extension().and_then(|ext| ext.to_str())
-                        == Some(self.config.langs[name].ext.as_str())
-                })
-            }),
-            None => self.source().is_none(),
-        };
-        let files = self.client.load(&cached).filter(|_| samples.is_dir());
-        self.files = match files {
-            Some(files) if !wanted => files,
-            _ => {
-                let url = id.url(Page::Problem);
-                let statement = statement::parse(&self.client.get(&url)?)?;
-                // Samples already there may hold your own cases, so they are written only once.
-                if !samples.is_dir() {
-                    write_samples(&samples, &statement)?;
-                }
-                if wanted {
-                    let name = lang.unwrap_or_else(|| self.config.default_lang.clone());
-                    self.create(&id, &name, &statement, &url)?;
-                }
-                self.client.save(&cached, &statement.files)?;
-                statement.files
-            }
-        };
-
-        for old in self.watched.drain(..) {
-            let _ = self.debouncer.watcher().unwatch(&old);
-        }
-        let Some(source) = self.source().cloned() else {
+    // Editors save by renaming a temp file over the source, so watch its folder and not the file.
+    fn watch(&mut self) -> Result<()> {
+        let Some(source) = self.source() else {
             return Ok(());
         };
-        // Editors save by renaming a temp file over the source, so watch its folder and not the file.
         let folder = source.parent().unwrap_or(&self.root).to_path_buf();
+        let samples = self.samples.join(self.id().to_string());
         for dir in [folder, samples] {
             self.debouncer
                 .watcher()
@@ -804,13 +826,44 @@ impl<'a> Watch<'a> {
         Ok(())
     }
 
-    fn create(
-        &mut self,
-        id: &ProblemId,
-        name: &str,
-        statement: &Statement,
-        url: &str,
-    ) -> Result<()> {
+    // Starts a solution in the language for new ones, or switches to it when there is one already.
+    fn start(&mut self) {
+        let Some(statement) = self.statement.take() else {
+            self.note = "the statement is still downloading".to_string();
+            return;
+        };
+        let id = self.id().clone();
+        let name = self.new_lang();
+        let ext = self.config.langs[&name].ext.clone();
+        let existing = self.sources.get(&id).and_then(|sources| {
+            sources
+                .iter()
+                .position(|source| source.extension().and_then(|e| e.to_str()) == Some(&ext))
+        });
+        let result = match existing {
+            Some(at) => {
+                self.active.insert(id, at);
+                Ok(())
+            }
+            None => self.create(&id, &name, &statement),
+        };
+        match result {
+            Ok(()) => self.open(),
+            Err(error) => {
+                self.statement = Some(statement);
+                self.note = format!("{error:#}");
+            }
+        }
+    }
+
+    fn new_lang(&self) -> String {
+        self.lang
+            .clone()
+            .unwrap_or_else(|| self.config.default_lang.clone())
+    }
+
+    fn create(&mut self, id: &ProblemId, name: &str, statement: &Statement) -> Result<()> {
+        let url = id.url(Page::Problem);
         let lang = &self.config.langs[name];
         let template_path = self.templates.join(format!("main.{}", lang.ext));
         let template = std::fs::read_to_string(&template_path)
@@ -818,7 +871,7 @@ impl<'a> Watch<'a> {
         let file = self.root.join(format!("{id}.{}", lang.ext));
         // A file the glob skipped, say an ignored one, is kept as it is.
         if !file.exists() {
-            let header = statement::comment(&lang.comment, statement, url);
+            let header = statement::comment(&lang.comment, statement, &url);
             std::fs::write(&file, header + &template)?;
         }
         let sources = self.sources.entry(id.clone()).or_default();
@@ -830,6 +883,7 @@ impl<'a> Watch<'a> {
     fn copy(&mut self) {
         match self.report {
             Report::Ran(_) | Report::NoSamples => {}
+            Report::Downloading | Report::NoSolution => return,
             Report::Building | Report::Failed(_) | Report::BuildFailed(_) => {
                 self.note = "the last build failed, fix it before copying".to_string();
                 return;
@@ -1020,6 +1074,8 @@ impl<'a> Watch<'a> {
     fn problem(&self, width: usize) -> (String, String) {
         let mut body = String::new();
         match &self.report {
+            Report::Downloading => body.push_str("Downloading the statement…\n"),
+            Report::NoSolution => body.push_str("No solution yet, e to start one\n"),
             Report::Building => body.push_str("Building…\n"),
             Report::Failed(message) => {
                 let _ = writeln!(body, "{}", message.as_str().red());
@@ -1092,9 +1148,8 @@ impl<'a> Watch<'a> {
                 format!("This problem reads {input} and writes {output}").yellow()
             );
         }
-        if self.report.passed()
-            && let Some(shown) = self.shown()
-        {
+        if self.report.passed() {
+            let shown = self.shown();
             let lang = self.lang(&shown.source);
             let _ = writeln!(body, "\n{}", "Samples pass ✓".green().bold());
             let _ = writeln!(
@@ -1145,10 +1200,7 @@ impl<'a> Watch<'a> {
             }
             let _ = write!(title, "   {}", icons.concat());
         }
-        let editor = match self.shown() {
-            Some(shown) => shown.expand(&self.config.editor, Quote::Shell),
-            None => String::new(),
-        };
+        let editor = self.shown().expand(&self.config.editor, Quote::Shell);
         let next = match self.verdict {
             Verdict::Accepted => "next".underlined().to_string(),
             Verdict::Idle
@@ -1175,6 +1227,7 @@ impl<'a> Watch<'a> {
                 ("]t", "untouched"),
                 ("r", "rerun"),
                 ("s", "swap"),
+                ("e", "start"),
                 ("l", "list"),
                 ("q", "quit"),
             ])
@@ -1309,20 +1362,6 @@ fn key(source: &Path) -> String {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default()
-}
-
-fn write_samples(dir: &Path, statement: &Statement) -> Result<()> {
-    std::fs::create_dir_all(dir)?;
-    match statement.kind {
-        Kind::Standard => {
-            for (k, sample) in statement.samples.iter().enumerate() {
-                std::fs::write(dir.join(format!("in{}.txt", k + 1)), &sample.input)?;
-                std::fs::write(dir.join(format!("ans{}.txt", k + 1)), &sample.answer)?;
-            }
-        }
-        Kind::Interactive => {}
-    }
-    Ok(())
 }
 
 // Runs on its own thread so a slow or missing connection never blocks the screen.
