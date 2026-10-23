@@ -19,16 +19,16 @@ cf 4A
 
 The first run writes the config to `~/.config/cf/` and asks for your Codeforces handle, which it checks against Codeforces before saving.
 
-- `cf` alone opens the problem of your last submission.
-- `cf <problem>` opens a problem by id or link and watches it.
+`cf` walks a list of problems. The list decides which problems show; the solutions in the folder fill in how your samples do and your Codeforces submissions fill in the verdicts, for whatever problems they share with the list.
 
-Without a list, `cf` walks a line in id order: the problems you submitted to, then the whole problemset from where you started. `p` goes back over what you did and `n` moves on.
-- `cf -l <list>` walks a list from its first problem you have not solved. Add a problem to open the list there.
+- `cf` walks the solutions in the folder, from your last submission among them.
+- `cf 4A 71A 1C` walks those problems, ids or links, in that order. `cf 4A` is a list of one.
+- `cf -l <list>` walks a list from a file, a URL, stdin or `config.json`.
 - `cf -d <dir>` takes the solutions from `<dir>` instead of the current folder.
-- `cf <problem> --lang python` starts a solution in another language than `default_lang`.
+- `cf 4A --lang python` starts solutions in another language than `default_lang`.
 - `cf sync` refreshes the problem set and your submissions.
 
-Gym problems and anything outside the Codeforces problemset are left out.
+A list starts at its first problem you have not solved. Gym problems and anything outside the Codeforces problemset are left out.
 
 A solution is a file named `<id>.<ext>`, like `4A.cpp`, anywhere under the solutions folder; `.gitignore`, `.ignore` and hidden files are skipped. Moving between problems only downloads their statements and samples; `e` starts a solution, in the folder itself with the statement as a comment on top, and you can move it anywhere after. A problem can have one solution per language, and with the same name twice the most recently edited one counts. Solved and tried come from your Codeforces submissions; the files only say how your samples do.
 
@@ -51,11 +51,11 @@ https://codeforces.com/problemset/problem/1374/B
 https://codeforces.com/contest/1520/problem/F2
 ```
 
-`-l` takes a file, a URL, `-` for stdin, a folder, or the name of a list in `config.json`. A folder lists the solutions in it, so `cf -l .` walks what you have here:
+`-l` takes a file, a URL, `-` for stdin, a folder, or the name of a list in `config.json`. A folder lists the solutions in it, so `cf -l ~/old-solutions` walks those:
 
 ```
 cf -l ladder.txt
-cf -l .
+cf -l ~/old-solutions
 cf -l https://example.com/ladder-1200
 pbpaste | cf -l -
 cf -l div2a

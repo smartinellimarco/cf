@@ -119,7 +119,7 @@ enum Action {
 
 // A grid column: its cells, whether it is the current problem, and whether it has several
 // solutions.
-type Column<'a> = (Vec<String>, bool, bool, &'a ProblemId);
+type Column = (Vec<String>, bool, bool);
 
 // A verdict, plus the submission once it is final.
 type Update = (Verdict, Option<Submission>);
@@ -151,8 +151,6 @@ impl Drop for Screen {
 
 pub struct Setup {
     pub root: PathBuf,
-    // Walking a list rather than the problemset.
-    pub listed: bool,
     pub ids: Vec<ProblemId>,
     pub start: Option<ProblemId>,
     // Language for new files instead of default_lang, from --lang.
@@ -163,7 +161,6 @@ pub struct Setup {
 
 pub struct Watch<'a> {
     client: &'a mut Client,
-    listed: bool,
     config: Config,
     ids: Vec<ProblemId>,
     history: HashMap<ProblemId, Vec<Attempt>>,
@@ -214,7 +211,6 @@ impl<'a> Watch<'a> {
     ) -> Result<Watch<'a>> {
         let Setup {
             root,
-            listed,
             ids,
             start,
             lang,
@@ -238,7 +234,6 @@ impl<'a> Watch<'a> {
         let sources = local::find(&root, &config);
         let mut watch = Watch {
             client,
-            listed,
             history: history(&submissions),
             config,
             ids,
@@ -730,7 +725,7 @@ impl<'a> Watch<'a> {
 
     // One column per problem with its attempts stacked upwards, newest at the bottom. Also
     // returns the problems on screen, which the legend counts when there is no list.
-    fn progress(&self, width: usize) -> (Vec<String>, Vec<ProblemId>) {
+    fn progress(&self, width: usize) -> Vec<String> {
         let per_band = (width / 2).clamp(1, COLUMNS_PER_BAND);
         let mut columns = Vec::new();
         for (at, id) in self.ids.iter().enumerate() {
@@ -738,33 +733,24 @@ impl<'a> Watch<'a> {
                 .sources
                 .get(id)
                 .is_some_and(|sources| sources.len() > 1);
-            columns.push((self.column(id), at == self.current, several, id));
+            columns.push((self.column(id), at == self.current, several));
         }
-        // A list shows in fixed bands; the problemset is too long, so one band slides with you.
-        let bands: Vec<&[Column]> = if self.listed {
-            let count = columns.len().div_ceil(per_band);
-            let first = (self.current / per_band)
-                .saturating_sub(BANDS_SHOWN / 2)
-                .min(count.saturating_sub(BANDS_SHOWN));
-            columns
-                .chunks(per_band)
-                .skip(first)
-                .take(BANDS_SHOWN)
-                .collect()
-        } else {
-            let first = self
-                .current
-                .saturating_sub(per_band / 2)
-                .min(columns.len().saturating_sub(per_band));
-            vec![&columns[first..(first + per_band).min(columns.len())]]
-        };
+        // Fixed bands, so moving shifts the current mark and not the grid.
+        let count = columns.len().div_ceil(per_band);
+        let first = (self.current / per_band)
+            .saturating_sub(BANDS_SHOWN / 2)
+            .min(count.saturating_sub(BANDS_SHOWN));
+        let bands: Vec<&[Column]> = columns
+            .chunks(per_band)
+            .skip(first)
+            .take(BANDS_SHOWN)
+            .collect();
         let mut lines = Vec::new();
-        let mut shown = Vec::new();
         for chunk in bands {
             // Always the full height, so what comes below never moves.
             for row in (0..=ATTEMPTS_SHOWN + 1).rev() {
                 let mut line = String::new();
-                for (cells, _, _, _) in chunk {
+                for (cells, _, _) in chunk {
                     match cells.get(row) {
                         Some(cell) => line.push_str(cell),
                         None => line.push(' '),
@@ -775,8 +761,7 @@ impl<'a> Watch<'a> {
             }
             // A cross on the baseline marks a problem with more than one solution to swap between.
             let mut base = String::new();
-            for (_, is_current, several, id) in chunk {
-                shown.push((*id).clone());
+            for (_, is_current, several) in chunk {
                 let mark = match (is_current, several) {
                     (true, true) => "╋".bold(),
                     (true, false) => "━".bold(),
@@ -787,13 +772,13 @@ impl<'a> Watch<'a> {
             }
             lines.push(base);
         }
-        (lines, shown)
+        lines
     }
 
     // Each symbol with how many problems are in that state: the whole list, or the grid on
     // screen when walking the problemset.
-    fn legend(&self, shown: &[ProblemId]) -> Vec<String> {
-        let ids = if self.listed { &self.ids[..] } else { shown };
+    fn legend(&self) -> Vec<String> {
+        let ids = &self.ids;
         let remote = |mark: Mark| {
             ids.iter()
                 .filter(|id| self.remote(id) == Some(mark))
@@ -1136,12 +1121,12 @@ impl<'a> Watch<'a> {
     }
 
     fn list(&self, cursor: usize, rows: usize, width: usize) -> (String, String) {
-        let (grid, shown) = self.progress(width);
+        let grid = self.progress(width);
         let mut footer = center_block(&grid, width).join("\n");
         let _ = write!(
             footer,
             "\n{}",
-            center_block(&self.legend(&shown), width).join("\n")
+            center_block(&self.legend(), width).join("\n")
         );
         let _ = write!(
             footer,
@@ -1326,12 +1311,12 @@ impl<'a> Watch<'a> {
         }
         lines.resize(REPORT_LINES, String::new());
 
-        let (grid, shown) = self.progress(width);
+        let grid = self.progress(width);
         lines.extend(center_block(&grid, width));
         lines.push(String::new());
         lines.extend(messages);
         lines.push(String::new());
-        lines.extend(center_block(&self.legend(&shown), width));
+        lines.extend(center_block(&self.legend(), width));
         lines.push(String::new());
 
         let id = self.id();
