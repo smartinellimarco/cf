@@ -34,6 +34,8 @@ const ATTEMPTS_SHOWN: usize = 5;
 const RING: &str = "\u{f0766}";
 const DOT: &str = "\u{f0765}";
 const MORE: &str = "\u{f01d9}";
+// nf-md-circle_small, for a problem with nothing to show yet.
+const EMPTY: &str = "\u{f09df}";
 const FLASH: Duration = Duration::from_secs(1);
 const COLUMN_MAX: usize = 40;
 
@@ -402,6 +404,7 @@ impl<'a> Watch<'a> {
             }
             ('s', View::Problem) => self.swap(),
             ('e', View::Problem) => self.start(),
+            ('w', View::Problem) => self.browse(),
             _ => {}
         }
         Action::Continue
@@ -587,6 +590,14 @@ impl<'a> Watch<'a> {
         {
             paths.source = relative.to_path_buf();
         }
+        // The cache is deep under the home folder, so ~ keeps the command on one line.
+        if let Some(home) = std::env::home_dir() {
+            for path in [&mut paths.samples, &mut paths.build] {
+                if let Ok(relative) = path.strip_prefix(&home) {
+                    *path = PathBuf::from("~").join(relative);
+                }
+            }
+        }
         paths
     }
 
@@ -644,21 +655,20 @@ impl<'a> Watch<'a> {
         from % self.ids.len()
     }
 
-    // One column per problem with its attempts stacked upwards, oldest at the bottom.
-    fn progress(&self, width: usize) -> String {
-        const PREFIX: &str = "Progress: ";
+    // One column per problem with its attempts stacked upwards, oldest at the bottom, and the
+    // count of solved problems under it.
+    fn progress(&self, width: usize) -> (Vec<String>, String) {
         let count = if self.listed {
-            format!("  {}/{}", self.solved(), self.ids.len())
+            format!("{}/{}", self.solved(), self.ids.len())
         } else {
             let tried = self
                 .ids
                 .iter()
                 .filter(|id| self.status(id) != Status::Todo)
                 .count();
-            format!("  {}/{tried} tried", self.solved())
+            format!("{}/{tried} tried", self.solved())
         };
-        let per_band =
-            (width.saturating_sub(PREFIX.len() + count.len()) / 2).clamp(1, COLUMNS_PER_BAND);
+        let per_band = (width / 2).clamp(1, COLUMNS_PER_BAND);
         let mut columns = Vec::new();
         for (at, id) in self.ids.iter().enumerate() {
             let several = self
@@ -685,45 +695,38 @@ impl<'a> Watch<'a> {
                 .min(columns.len().saturating_sub(per_band));
             vec![&columns[first..(first + per_band).min(columns.len())]]
         };
-        let mut out = String::new();
-        for (band, chunk) in bands.iter().enumerate() {
+        let mut lines = Vec::new();
+        for chunk in bands {
             let height = chunk
                 .iter()
                 .map(|(cells, _, _)| cells.len())
                 .max()
                 .unwrap_or(0);
             for row in (0..height).rev() {
-                out.push_str(&" ".repeat(PREFIX.len()));
-                for (cells, _, _) in chunk.iter() {
+                let mut line = String::new();
+                for (cells, _, _) in chunk {
                     match cells.get(row) {
-                        Some(cell) => out.push_str(cell),
-                        None => out.push(' '),
+                        Some(cell) => line.push_str(cell),
+                        None => line.push(' '),
                     }
-                    out.push(' ');
+                    line.push(' ');
                 }
-                out.push('\n');
+                lines.push(line);
             }
-            let lead = if band == 0 {
-                PREFIX.to_string()
-            } else {
-                " ".repeat(PREFIX.len())
-            };
-            out.push_str(&lead);
             // A cross on the baseline marks a problem with more than one solution to swap between.
-            for (_, is_current, several) in chunk.iter() {
-                let base = match (is_current, several) {
-                    (true, true) => "━╋".bold(),
-                    (true, false) => "━━".bold(),
-                    (false, true) => "─┼".dim(),
-                    (false, false) => "──".dim(),
+            let mut base = String::new();
+            for (_, is_current, several) in chunk {
+                let mark = match (is_current, several) {
+                    (true, true) => "╋".bold(),
+                    (true, false) => "━".bold(),
+                    (false, true) => "┼".dim(),
+                    (false, false) => "─".dim(),
                 };
-                out.push_str(&base.to_string());
+                let _ = write!(base, "{mark} ");
             }
-            out.push('\n');
+            lines.push(base);
         }
-        out.pop();
-        out.push_str(&count);
-        out
+        (lines, count)
     }
 
     // Bottom-up cells: the last attempts, then the local result when it is newer than them.
@@ -751,6 +754,9 @@ impl<'a> Watch<'a> {
                 cells.push(dot.to_string());
             }
             Some(Local::Ran { .. }) | None => {}
+        }
+        if cells.is_empty() {
+            cells.push(EMPTY.dark_grey().to_string());
         }
         // Five cells show; more get a mark on a row of its own above them.
         if cells.len() > ATTEMPTS_SHOWN {
@@ -931,6 +937,12 @@ impl<'a> Watch<'a> {
         }
     }
 
+    fn browse(&mut self) {
+        if let Err(error) = open::that(self.id().url(Page::Problem)) {
+            self.note = format!("could not open the browser: {error}");
+        }
+    }
+
     fn submit(&mut self) {
         match open::that(self.id().url(Page::Submit)) {
             Ok(()) => self.expect(),
@@ -1011,9 +1023,12 @@ impl<'a> Watch<'a> {
     }
 
     fn list(&self, cursor: usize, rows: usize, width: usize) -> (String, String) {
-        let footer = format!(
-            "{}\n{}",
-            self.progress(width),
+        let (grid, count) = self.progress(width);
+        let mut footer = center_block(&grid, width).join("\n");
+        let _ = write!(footer, "\n{}", center(&count, width));
+        let _ = write!(
+            footer,
+            "\n{}",
             hotkeys(&[
                 ("n", "down"),
                 ("p", "up"),
@@ -1076,73 +1091,58 @@ impl<'a> Watch<'a> {
         (body, footer)
     }
 
-    // Only the first failing sample shows, so the report fits its fixed height.
-    fn report(&self) -> String {
-        let mut out = String::new();
+    // Only the first failing sample shows, so the report fits its fixed height. The head lines
+    // center one by one, the block (a diff or a log) centers as a whole to keep its columns.
+    fn report(&self) -> (Vec<String>, Vec<String>) {
+        let head = |line: String| (vec![line], Vec::new());
+        let block = |text: &str| text.lines().map(str::to_string).collect::<Vec<_>>();
         match &self.report {
-            Report::Downloading => out.push_str("Downloading the statement…"),
-            Report::NoSolution => out.push_str("No solution yet, e to start one"),
-            Report::Building => out.push_str("Building…"),
-            Report::Failed(message) => out.push_str(&message.as_str().red().to_string()),
-            Report::BuildFailed(log) => {
-                let _ = write!(out, "{}\n\n{}", "Build failed".red().bold(), log);
-            }
-            Report::NoSamples => out.push_str(
-                "No samples to run, interactive problems can only be judged on Codeforces",
+            Report::Downloading => head("Downloading the statement…".to_string()),
+            Report::NoSolution => head("No solution yet, e to start one".to_string()),
+            Report::Building => head("Building…".to_string()),
+            Report::Failed(message) => head(message.as_str().red().to_string()),
+            Report::BuildFailed(log) => (vec!["Build failed".red().bold().to_string()], block(log)),
+            Report::NoSamples => head(
+                "No samples to run, interactive problems can only be judged on Codeforces"
+                    .to_string(),
             ),
             Report::Ran(outcomes) => {
                 let mut failing = outcomes
                     .iter()
                     .filter(|(_, outcome)| !matches!(outcome, Outcome::Pass { .. }));
                 let Some((k, first)) = failing.next() else {
-                    let _ = write!(
-                        out,
-                        "{}",
-                        format!("Samples pass ✓ ({})", outcomes.len())
-                            .green()
-                            .bold()
-                    );
-                    return out;
+                    let pass = format!("Samples pass ✓ ({})", outcomes.len());
+                    return head(pass.green().bold().to_string());
                 };
                 let rest: Vec<String> = failing.map(|(k, _)| k.to_string()).collect();
-                if !rest.is_empty() {
-                    let _ = writeln!(
-                        out,
-                        "{}",
-                        format!("also failing: {}", rest.join(", ")).red()
-                    );
-                }
-                match first {
-                    Outcome::Pass { .. } => {}
+                let mut lines = Vec::new();
+                let (what, elapsed, details) = match first {
+                    Outcome::Pass { .. } => return (lines, Vec::new()),
                     Outcome::Wrong {
                         elapsed,
                         expected,
                         got,
-                    } => {
-                        let _ = write!(
-                            out,
-                            "{} {}\n{}",
-                            format!("Sample {k} ✗ wrong answer").red(),
-                            format!("{} ms", elapsed.as_millis()).dim(),
-                            diff(expected, got)
-                        );
-                    }
+                    } => ("wrong answer", Some(elapsed), diff(expected, got)),
                     Outcome::Crash { elapsed, stderr } => {
-                        let _ = write!(
-                            out,
-                            "{} {}\n{}",
-                            format!("Sample {k} ✗ runtime error").red(),
-                            format!("{} ms", elapsed.as_millis()).dim(),
-                            stderr
-                        );
+                        ("runtime error", Some(elapsed), block(stderr))
                     }
-                    Outcome::Timeout => {
-                        let _ = write!(out, "{}", format!("Sample {k} ✗ over 5 s").red());
-                    }
+                    Outcome::Timeout => ("over 5 s", None, Vec::new()),
+                };
+                let mut line = format!("Sample {k} ✗ {what}").red().to_string();
+                if let Some(elapsed) = elapsed {
+                    let _ = write!(line, "  {}", format!("{} ms", elapsed.as_millis()).dim());
                 }
+                lines.push(line);
+                if !rest.is_empty() {
+                    lines.push(
+                        format!("also failing: {}", rest.join(", "))
+                            .red()
+                            .to_string(),
+                    );
+                }
+                (lines, details)
             }
         }
-        out
     }
 
     fn messages(&self) -> Vec<String> {
@@ -1191,24 +1191,35 @@ impl<'a> Watch<'a> {
     }
 
     // Like rustlings the view flows top to bottom, and the report keeps a fixed height so
-    // nothing below it moves when it changes.
+    // nothing below it moves when it changes. Every line is centered.
     fn problem(&self, width: usize) -> (String, String) {
-        let messages = self.messages();
-        let room = REPORT_LINES.saturating_sub(messages.len() + 1);
-        let mut lines: Vec<String> = Vec::new();
-        for line in self.report().lines() {
-            lines.extend(wrap(line, width));
+        let messages: Vec<String> = self.messages().iter().map(|m| center(m, width)).collect();
+        let (head, details) = self.report();
+        let mut report: Vec<String> = head.iter().map(|line| center(line, width)).collect();
+        if !details.is_empty() {
+            report.push(String::new());
+            report.extend(center_block(&details, width));
         }
+        let mut lines = Vec::new();
+        for line in report {
+            lines.extend(wrap(&line, width));
+        }
+        let room = REPORT_LINES.saturating_sub(messages.len() + 1);
         if lines.len() > room {
             lines.truncate(room.saturating_sub(1));
-            lines.push("…".dim().to_string());
+            lines.push(center(&"…".dim().to_string(), width));
         }
-        lines.resize(room, String::new());
-        lines.push(String::new());
-        lines.extend(messages);
+        if !messages.is_empty() {
+            lines.push(String::new());
+            lines.extend(messages);
+        }
         lines.resize(REPORT_LINES, String::new());
-        let mut body = lines.join("\n");
-        body.push('\n');
+
+        let (grid, count) = self.progress(width);
+        lines.extend(center_block(&grid, width));
+        lines.push(center(&count, width));
+        lines.push(String::new());
+        lines.push(center(&legend(), width));
 
         let id = self.id();
         let url = id.url(Page::Problem);
@@ -1216,9 +1227,11 @@ impl<'a> Watch<'a> {
         if let Some(problem) = self.catalog.get(id) {
             let _ = write!(title, " {}", problem.name);
             if let Some(rating) = problem.rating {
-                let _ = write!(title, " ({rating})");
+                let _ = write!(title, "  {rating}");
             }
         }
+        // OSC 8 makes the title a link in terminals that support it.
+        let mut title = format!("\x1b]8;;{url}\x1b\\{}\x1b]8;;\x1b\\", title.bold());
         if let Some(sources) = self.sources.get(id) {
             let active = self.active.get(id).copied().unwrap_or(0);
             let mut icons = Vec::new();
@@ -1233,7 +1246,15 @@ impl<'a> Watch<'a> {
             }
             let _ = write!(title, "   {}", icons.concat());
         }
+        lines.push(center(&title, width));
+        // A background like inline code in markdown, from the terminal's own palette.
         let editor = self.shown().expand(&self.config.editor, Quote::Shell);
+        lines.push(center(
+            &format!(" {editor} ").on_dark_grey().to_string(),
+            width,
+        ));
+        lines.push(String::new());
+
         let next = match self.verdict {
             Verdict::Accepted => "next".underlined().to_string(),
             Verdict::Idle
@@ -1242,38 +1263,31 @@ impl<'a> Watch<'a> {
             | Verdict::Testing { .. }
             | Verdict::Rejected { .. } => "next".to_string(),
         };
-        // OSC 8 makes the link clickable in terminals that support it.
         let copy = match self.copied {
             Some(_) => "copied ✓".green().to_string(),
             None => "copy".to_string(),
         };
-        let footer = format!(
-            "{}\nCurrent problem: \x1b]8;;{url}\x1b\\{title}\x1b]8;;\x1b\\\n\n    {editor}\n\n{}",
-            self.progress(width),
-            prompt(&[
-                ("y", &copy),
-                ("o", "submit"),
-                ("n", &next),
-                ("p", "prev"),
-                ("]f", "failed"),
-                ("]s", "solved"),
-                ("]t", "untouched"),
-                ("r", "rerun"),
-                ("s", "swap"),
-                ("e", "start"),
-                ("l", "list"),
-                ("q", "quit"),
-            ])
-        );
-        body.push_str(&footer);
-        (body, String::new())
+        let keys = prompt(&[
+            ("y", &copy),
+            ("o", "submit"),
+            ("w", "web"),
+            ("e", "start"),
+            ("s", "swap"),
+            ("n", &next),
+            ("p", "prev"),
+            ("r", "rerun"),
+            ("l", "list"),
+            ("q", "quit"),
+        ]);
+        lines.push(center(&keys, width));
+        (lines.join("\n"), String::new())
     }
 }
 
 fn prompt(keys: &[(&str, &str)]) -> String {
     let mut out = String::new();
     for (key, label) in keys {
-        let _ = write!(out, "{}:{label}  ", key.bold());
+        let _ = write!(out, "{} {label}  ", key.bold());
     }
     out.truncate(out.len() - "  ".len());
     out.push_str(" ? ");
@@ -1289,7 +1303,7 @@ fn hotkeys(keys: &[(&str, &str)]) -> String {
     out
 }
 
-fn diff(expected: &str, got: &str) -> String {
+fn diff(expected: &str, got: &str) -> Vec<String> {
     let expected: Vec<&str> = expected.lines().collect();
     let got: Vec<&str> = got.lines().collect();
     let mut width = "expected".len();
@@ -1297,11 +1311,11 @@ fn diff(expected: &str, got: &str) -> String {
         width = width.max(line.chars().count());
     }
     let width = width.min(COLUMN_MAX) + 4;
-    let mut out = format!(
-        "{}{}\n",
-        format!("{:<width$}", "expected").dim(),
-        "got".dim()
-    );
+    let mut out = vec![format!(
+        "{}{}",
+        format!("{:<width$}", "expected").bold(),
+        "got".bold()
+    )];
     let rows = expected.len().max(got.len());
     for at in 0..rows {
         let left = expected.get(at).copied().unwrap_or("");
@@ -1312,9 +1326,66 @@ fn diff(expected: &str, got: &str) -> String {
         } else {
             right.red().to_string()
         };
-        let _ = writeln!(out, "{left:<width$}{right}");
+        out.push(format!("{left:<width$}{right}"));
     }
     out
+}
+
+fn legend() -> String {
+    format!(
+        "{} accepted  {} rejected  {} compilation error  {} testing  {} samples here  {} untouched",
+        RING.green(),
+        RING.red(),
+        RING.dark_grey(),
+        RING.yellow(),
+        DOT.green(),
+        EMPTY.dark_grey()
+    )
+}
+
+fn center(line: &str, width: usize) -> String {
+    let pad = width.saturating_sub(visible(line)) / 2;
+    format!("{}{line}", " ".repeat(pad))
+}
+
+// Lines that must stay aligned with each other move together, by the widest one.
+fn center_block(lines: &[String], width: usize) -> Vec<String> {
+    let widest = lines.iter().map(|line| visible(line)).max().unwrap_or(0);
+    let pad = " ".repeat(width.saturating_sub(widest) / 2);
+    lines.iter().map(|line| format!("{pad}{line}")).collect()
+}
+
+fn visible(line: &str) -> usize {
+    let mut count = 0;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            skip_escape(&mut chars, &mut String::new());
+        } else {
+            count += 1;
+        }
+    }
+    count
+}
+
+// Copies an escape sequence through: CSI ends at a letter, OSC (links) at ESC \\ or BEL.
+fn skip_escape(chars: &mut std::str::Chars, into: &mut String) {
+    let Some(kind) = chars.next() else {
+        return;
+    };
+    into.push(kind);
+    let mut previous = kind;
+    for c in chars.by_ref() {
+        into.push(c);
+        let end = match kind {
+            ']' => c == '\x07' || (previous == '\x1b' && c == '\\'),
+            _ => c.is_ascii_alphabetic(),
+        };
+        if end {
+            break;
+        }
+        previous = c;
+    }
 }
 
 // Splits a line at the terminal width so a long one doesn't spill into the row drawn below it.
@@ -1329,12 +1400,7 @@ fn wrap(line: &str, width: usize) -> Vec<String> {
         };
         if c == '\x1b' {
             row.push(c);
-            for c in chars.by_ref() {
-                row.push(c);
-                if c.is_ascii_alphabetic() || c == '\\' {
-                    break;
-                }
-            }
+            skip_escape(&mut chars, row);
             continue;
         }
         if column == width.max(1) {

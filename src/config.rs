@@ -207,7 +207,8 @@ impl Paths {
 }
 
 fn shell_quote(text: &str) -> String {
-    let safe = |c: char| c.is_ascii_alphanumeric() || "/._-+".contains(c);
+    // A ~ only expands at the start of a word, so it is safe anywhere else too.
+    let safe = |c: char| c.is_ascii_alphanumeric() || "/._-+~".contains(c);
     if !text.is_empty() && text.chars().all(safe) {
         return text.to_string();
     }
