@@ -26,12 +26,12 @@ pub struct Done {
     pub report: Report,
 }
 
-// What the samples last said about a problem, and for which inputs.
+// The last report of a solution and the inputs it ran on, so an unchanged one needn't run again.
 #[derive(Serialize, Deserialize)]
 pub struct Stored {
     pub hash: String,
-    pub passed: bool,
     pub at: i64,
+    pub report: Report,
 }
 
 #[derive(Default)]
@@ -147,13 +147,22 @@ fn work(shared: &Shared, results: &Path, done: &Sender<Done>) {
         if cancel.load(Ordering::Relaxed) {
             continue;
         }
-        if let (Ok(hash), Some(passed)) = (hash, passed(&report)) {
-            let at = codeforces::now();
-            let _ = save(results, &job.key, &Stored { hash, passed, at });
-        }
+        let at = codeforces::now();
+        let stored = match hash {
+            // A failure of cf itself says nothing about the solution, so it isn't kept.
+            Ok(hash) if !matches!(report, Report::Failed(_)) => Stored { hash, at, report },
+            _ => {
+                let _ = done.send(Done {
+                    key: job.key,
+                    report,
+                });
+                continue;
+            }
+        };
+        let _ = save(results, &job.key, &stored);
         let _ = done.send(Done {
             key: job.key,
-            report,
+            report: stored.report,
         });
     }
 }
