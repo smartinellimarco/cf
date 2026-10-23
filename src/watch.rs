@@ -25,7 +25,6 @@ const POLL_EVERY: Duration = Duration::from_secs(5);
 const POLL_FOR: Duration = Duration::from_secs(15 * 60);
 // Allows for clock skew between this machine and Codeforces.
 const SLACK_SECONDS: i64 = 30;
-const NAME_WIDTH: usize = 40;
 const COLUMNS_PER_BAND: usize = 50;
 const BANDS_SHOWN: usize = 2;
 const ATTEMPTS_SHOWN: usize = 5;
@@ -95,11 +94,6 @@ enum Standing {
     LocalError,
 }
 
-enum View {
-    Problem,
-    List { cursor: usize },
-}
-
 enum Verdict {
     Idle,
     Waiting,
@@ -165,7 +159,6 @@ pub struct Watch<'a> {
     catalog: HashMap<ProblemId, Problem>,
     submissions: Vec<Submission>,
     current: usize,
-    view: View,
     report: Report,
     note: String,
     copied: Option<Instant>,
@@ -238,7 +231,6 @@ impl<'a> Watch<'a> {
             catalog,
             submissions,
             current: 0,
-            view: View::Problem,
             report: Report::Building,
             note: String::new(),
             copied: None,
@@ -384,13 +376,8 @@ impl<'a> Watch<'a> {
         }
         let KeyCode::Char(char) = key.code else {
             self.prefix = None;
-            match (key.code, &self.view) {
-                (KeyCode::Down, View::List { .. }) => self.go(Motion::Next),
-                (KeyCode::Up, View::List { .. }) => self.go(Motion::Prev),
-                (KeyCode::Enter, View::List { cursor }) => self.continue_at(*cursor),
-                (KeyCode::Esc, View::List { .. }) => self.view = View::Problem,
-                (KeyCode::Esc, View::Problem) => return Action::Quit,
-                _ => {}
+            if key.code == KeyCode::Esc {
+                return Action::Quit;
             }
             return Action::Continue;
         };
@@ -413,44 +400,27 @@ impl<'a> Watch<'a> {
             self.go(motion);
             return Action::Continue;
         }
-        match (char, &self.view) {
-            ('g' | ']' | '[', _) => self.prefix = Some(char),
-            ('n' | 'j', _) => self.go(Motion::Next),
-            ('p' | 'k', _) => self.go(Motion::Prev),
-            ('c', View::List { cursor }) => self.continue_at(*cursor),
-            ('l' | 'q', View::List { .. }) => self.view = View::Problem,
-            ('q', View::Problem) => return Action::Quit,
-            ('y', View::Problem) => self.copy(),
-            ('o', View::Problem) => self.submit(),
-            ('l', View::Problem) => {
-                self.view = View::List {
-                    cursor: self.current,
-                }
-            }
-            ('r', View::Problem) => {
+        match char {
+            'g' | ']' | '[' => self.prefix = Some(char),
+            'n' => self.go(Motion::Next),
+            'p' => self.go(Motion::Prev),
+            'q' => return Action::Quit,
+            'y' => self.copy(),
+            'o' => self.submit(),
+            'r' => {
                 self.rerun = true;
                 self.open();
             }
-            ('s', View::Problem) => self.swap(),
-            ('e', View::Problem) => self.start(),
-            ('w', View::Problem) => self.browse(),
+            's' => self.swap(),
+            'e' => self.start(),
+            'w' => self.browse(),
             _ => {}
         }
         Action::Continue
     }
 
-    fn continue_at(&mut self, cursor: usize) {
-        self.current = cursor;
-        self.view = View::Problem;
-        self.open();
-    }
-
-    // Moves the list cursor, or the current problem outside the list.
     fn go(&mut self, motion: Motion) {
-        let from = match self.view {
-            View::List { cursor } => cursor,
-            View::Problem => self.current,
-        };
+        let from = self.current;
         let last = self.ids.len() - 1;
         let to = match motion {
             Motion::Next => Some((from + 1).min(last)),
@@ -467,10 +437,6 @@ impl<'a> Watch<'a> {
             }
         };
         let Some(to) = to else {
-            // The list view has no room for notes, and one left behind would show up later.
-            if let View::List { .. } = self.view {
-                return;
-            }
             let name = match motion {
                 Motion::Find {
                     standing: Standing::Solved,
@@ -493,13 +459,9 @@ impl<'a> Watch<'a> {
             self.note = format!("no {name} problem {side} this one");
             return;
         };
-        match self.view {
-            View::List { .. } => self.view = View::List { cursor: to },
-            View::Problem if to != self.current => {
-                self.current = to;
-                self.open();
-            }
-            View::Problem => {}
+        if to != self.current {
+            self.current = to;
+            self.open();
         }
     }
 
@@ -1085,16 +1047,6 @@ impl<'a> Watch<'a> {
     fn render(&self) -> Result<()> {
         let (columns, rows) = terminal::size()?;
         let width = usize::from(columns);
-        let (body, footer) = match self.view {
-            View::List { cursor } => self.list(cursor, usize::from(rows), width),
-            View::Problem => self.problem(width),
-        };
-        let mut wrapped_footer = Vec::new();
-        for line in footer.lines() {
-            wrapped_footer.extend(wrap(line, width));
-        }
-        let footer = wrapped_footer;
-        let room = usize::from(rows).saturating_sub(footer.len());
         let mut stdout = std::io::stdout();
         queue!(
             stdout,
@@ -1102,87 +1054,15 @@ impl<'a> Watch<'a> {
             terminal::Clear(terminal::ClearType::All)
         )?;
         let mut wrapped = Vec::new();
-        for line in body.lines() {
+        for line in self.problem(width).lines() {
             wrapped.extend(wrap(line, width));
         }
-        for (at, line) in wrapped.iter().take(room).enumerate() {
+        for (at, line) in wrapped.iter().take(usize::from(rows)).enumerate() {
             queue!(stdout, cursor::MoveTo(0, at as u16))?;
-            stdout.write_all(line.as_bytes())?;
-        }
-        for (at, line) in footer.iter().enumerate() {
-            queue!(stdout, cursor::MoveTo(0, (room + at) as u16))?;
             stdout.write_all(line.as_bytes())?;
         }
         stdout.flush()?;
         Ok(())
-    }
-
-    fn list(&self, cursor: usize, rows: usize, width: usize) -> (String, String) {
-        let grid = self.progress(width);
-        let mut footer = center_block(&grid, width).join("\n");
-        let _ = write!(
-            footer,
-            "\n{}",
-            center_block(&self.legend(), width).join("\n")
-        );
-        let _ = write!(
-            footer,
-            "\n{}",
-            hotkeys(&[
-                ("n", "down"),
-                ("p", "up"),
-                ("gg", "first"),
-                ("ge", "last"),
-                ("]f", "failed"),
-                ("]s", "solved"),
-                ("]t", "untouched"),
-                ("c", "continue at"),
-                ("q", "quit list"),
-            ])
-        );
-        let visible = rows.saturating_sub(footer.lines().count() + 1).max(1);
-        let top = cursor
-            .saturating_sub(visible / 2)
-            .min(self.ids.len().saturating_sub(visible));
-        let mut body = format!(
-            "  Current  State    Local  {:<8} {:<NAME_WIDTH$} Rating\n",
-            "Id", "Name"
-        );
-        for at in top..(top + visible).min(self.ids.len()) {
-            let id = &self.ids[at];
-            let (name, rating) = match self.catalog.get(id) {
-                Some(problem) => (
-                    problem.name.as_str(),
-                    problem.rating.map(|r| r.to_string()).unwrap_or_default(),
-                ),
-                None => ("", String::new()),
-            };
-            let name: String = name.chars().take(NAME_WIDTH).collect();
-            let current = if at == self.current {
-                ">>>>>>>  ".red().to_string()
-            } else {
-                " ".repeat(9)
-            };
-            let state = match self.status(id) {
-                Status::Solved => "DONE   ".green(),
-                Status::Tried => "TRIED  ".red(),
-                Status::Todo => "PENDING".yellow(),
-            };
-            let local = match self.local(id) {
-                Some(local) => local_dot(local),
-                None => " ".to_string(),
-            };
-            let row = format!(
-                "{current}{state}  {local}      {:<8} {name:<NAME_WIDTH$} {rating}",
-                id.to_string()
-            );
-            if at == cursor {
-                let _ = writeln!(body, "> {}", row.reverse().bold());
-            } else {
-                let _ = writeln!(body, "  {row}");
-            }
-        }
-        (body, footer)
     }
 
     // Only the first failing sample shows, so the report fits its fixed height. The head lines
@@ -1290,7 +1170,7 @@ impl<'a> Watch<'a> {
     // nothing below it moves when it changes. Every line is centered.
     // Everything with a fixed height goes first and the report, which grows with what it shows,
     // goes last, so nothing moves and no space is reserved for it. Every line is centered.
-    fn problem(&self, width: usize) -> (String, String) {
+    fn problem(&self, width: usize) -> String {
         let mut lines = Vec::new();
         let id = self.id();
         let url = id.url(Page::Problem);
@@ -1349,7 +1229,6 @@ impl<'a> Watch<'a> {
             ("e", "start"),
             ("s", "swap"),
             ("r", "rerun"),
-            ("l", "list"),
             ("q", "quit"),
         ]);
         let motions = prompt(&[
@@ -1381,7 +1260,7 @@ impl<'a> Watch<'a> {
             lines.push(String::new());
             lines.extend(center_block(&details, width));
         }
-        (lines.join("\n"), String::new())
+        lines.join("\n")
     }
 }
 
@@ -1389,15 +1268,6 @@ fn prompt(keys: &[(&str, &str)]) -> String {
     let mut out = String::new();
     for (key, label) in keys {
         let _ = write!(out, "{} {label}  ", key.bold());
-    }
-    out.truncate(out.len() - "  ".len());
-    out
-}
-
-fn hotkeys(keys: &[(&str, &str)]) -> String {
-    let mut out = String::new();
-    for (key, label) in keys {
-        let _ = write!(out, "{}:{label}  ", key.yellow().bold());
     }
     out.truncate(out.len() - "  ".len());
     out
