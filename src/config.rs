@@ -21,12 +21,18 @@ pub struct Config {
 #[derive(Deserialize, Clone)]
 pub struct Lang {
     pub ext: String,
-    // A nerd font glyph shown next to the file name.
+    // A nerd font glyph, in a color of the terminal's palette like "blue".
     pub icon: String,
+    #[serde(default = "color")]
+    pub color: String,
     pub comment: String,
     pub build: String,
     pub run: String,
     pub submit: String,
+}
+
+fn color() -> String {
+    "reset".to_string()
 }
 
 fn editor() -> String {
@@ -118,6 +124,12 @@ impl Config {
         let mut exts = HashMap::new();
         for (name, lang) in &config.langs {
             // The extension is how a file finds its lang, so two langs can't share one.
+            if crossterm::style::Color::try_from(lang.color.as_str()).is_err() {
+                bail!(
+                    "{shown} gives lang {name} the color {:?}, the colors are black, red, green, yellow, blue, magenta, cyan, white, grey and their dark_ versions",
+                    lang.color
+                );
+            }
             if let Some(other) = exts.insert(lang.ext.as_str(), name) {
                 bail!(
                     "{shown} gives langs {other} and {name} the same ext {:?}",
