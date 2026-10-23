@@ -701,8 +701,9 @@ impl<'a> Watch<'a> {
                 // Two brackets with their tips toward the cells: cf's rows, then local's row that
                 // closes on the baseline.
                 let (label, edge) = match row {
-                    0 => ("local", "┌"),
-                    1 => ("cf", "└"),
+                    0 => ("", "┌"),
+                    1 => ("", "└"),
+                    2 => ("cf", "│"),
                     _ if row == ATTEMPTS_SHOWN + 1 => ("", "┌"),
                     _ => ("", "│"),
                 };
@@ -726,7 +727,7 @@ impl<'a> Watch<'a> {
                 }
                 band.push(line);
             }
-            let mut base = format!("{} ", "      └".dim());
+            let mut base = format!("{} {} ", "local".dim(), "└".dim());
             for (_, is_current) in chunk {
                 let mark = if *is_current {
                     "━".bold()
