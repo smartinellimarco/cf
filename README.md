@@ -14,15 +14,17 @@ Or with the shell installer from the [latest release](https://github.com/smartin
 
 ```
 mkdir codeforces && cd codeforces
-cf lists/ladder.txt
+cf 4A
 ```
 
-The first run writes the config to `~/.config/cf/` and asks for your Codeforces handle, which it checks against Codeforces before saving. Any folder works as a solutions folder; `cf` keeps `lists/` and `problems/` in it and nothing else.
+The first run writes the config to `~/.config/cf/` and asks for your Codeforces handle, which it checks against Codeforces before saving. Any folder works as a solutions folder; `cf` keeps `problems/` in it and nothing else.
 
-- `cf <list>` opens the first problem of the list you have not solved and watches it.
-- `cf` alone reopens the last list.
-- `cf <list> --fresh` restarts the list: only accepted submissions from now on count.
+- `cf <problem>` opens a problem by id or link and watches it. `n` walks the whole problemset from there, oldest contest first.
+- `cf -l <list>` walks a list from its first problem you have not solved. Add a problem to open the list there.
+- `cf` alone reopens what was open when you quit.
 - `cf sync` refreshes the problem set and your submissions.
+
+What counts as solved comes from your Codeforces submissions, so a problem solved once shows as solved in every list. Each problem has one solution, shared by every list that has it.
 
 Each problem lives in `problems/<id>/`: `main.<ext>` with the statement as a comment on top, and `in<k>.txt`/`ans<k>.txt` samples. Add your own cases with the next free `k`. Old problems that read `input.txt` and write `output.txt` get their samples through those files, and `cf` says so on screen.
 
@@ -41,43 +43,24 @@ https://codeforces.com/problemset/problem/1374/B
 https://codeforces.com/contest/1520/problem/F2
 ```
 
-The source can be a file, a URL or stdin. URLs and stdin are saved to `lists/<name>.txt`, where `name` is the last URL segment or the second argument:
+`-l` takes a file, a URL, `-` for stdin, or the name of a list in `config.json`:
 
 ```
-cf lists/ladder.txt
-cf https://example.com/ladder-1200
-pbpaste | cf - div2a
+cf -l ladder.txt
+cf -l https://example.com/ladder-1200
+pbpaste | cf -l -
+cf -l div2a
 ```
 
-<details>
-<summary>Famous lists</summary>
+Named lists map a name to a file or a URL:
 
-The [A2OJ ladders](https://github.com/rishabhdeepsingh/A2OJ-Ladder) by rating, named after the bottom of their range, 100 problems each, easiest first:
-
-```
-cf https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/11.%20Codeforces%20Rating%20%3C%201300/README.md a2oj-1200
-cf https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/12.%201300%20%3C%3D%20Codeforces%20Rating%20%3C%3D%201399/README.md a2oj-1300
-cf https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/13.%201400%20%3C%3D%20Codeforces%20Rating%20%3C%3D%201499/README.md a2oj-1400
-cf https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/14.%201500%20%3C%3D%20Codeforces%20Rating%20%3C%3D%201599/README.md a2oj-1500
-cf https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/15.%201600%20%3C%3D%20Codeforces%20Rating%20%3C%3D%201699/README.md a2oj-1600
-cf https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/16.%201700%20%3C%3D%20Codeforces%20Rating%20%3C%3D%201799/README.md a2oj-1700
-cf https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/17.%201800%20%3C%3D%20Codeforces%20Rating%20%3C%3D%201899/README.md a2oj-1800
-cf https://raw.githubusercontent.com/rishabhdeepsingh/A2OJ-Ladder/master/ladders/18.%201900%20%3C%3D%20Codeforces%20Rating%20%3C%3D%201999/README.md a2oj-1900
+```json
+"lists": {
+  "div2a": "https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/div2A.md"
+}
 ```
 
-The [updated ladders](https://github.com/karansinghgit/CodeForces-Ladders) by division and topic:
-
-```
-cf https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/div2A.md div2a
-cf https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/div2B.md div2b
-cf https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/div2C.md div2c
-cf https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/div2D.md div2d
-cf https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/div2E.md div2e
-cf https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/dynamicProgramming.md dp
-cf https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/strings.md strings
-```
-
-</details>
+The default config comes with the [A2OJ ladders](https://github.com/rishabhdeepsingh/A2OJ-Ladder) by rating, `a2oj-1200` to `a2oj-1900`, and the [updated ladders](https://github.com/karansinghgit/CodeForces-Ladders) by division and topic: `div2a` to `div2e`, `dp` and `strings`.
 
 ## Config
 
@@ -87,7 +70,7 @@ cf https://raw.githubusercontent.com/karansinghgit/CodeForces-Ladders/master/str
 |---|---|
 | `~/.config/cf/config.json` | handle, editor and languages |
 | `~/.config/cf/templates/main.<ext>` | the code every new problem starts from |
-| `~/.cache/cf/` | the problem set, your submissions, list progress and builds |
+| `~/.cache/cf/` | the problem set, your submissions, what each folder had open and builds |
 
 Edit `templates/main.cpp` to start every problem with your own boilerplate: includes, macros, fast IO. A new language needs its own `templates/main.<ext>`. Problems already opened keep the code they started with.
 

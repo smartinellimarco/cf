@@ -1,84 +1,68 @@
+use std::collections::HashMap;
 use std::io::{IsTerminal, Read};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 
 use crate::codeforces::{Client, ProblemId};
 use crate::statement;
 
-pub fn resolve(
-    client: &Client,
-    last: Option<&PathBuf>,
-    source: Option<&str>,
-    name: Option<&str>,
-) -> Result<PathBuf> {
-    let Some(source) = source else {
-        // The folder may have been recreated since, so a remembered list that is gone counts as none.
-        let Some(last) = last.filter(|path| path.is_file()) else {
-            bail!("no list yet, run `cf <file | url | ->`");
-        };
-        return Ok(last.clone());
-    };
+#[derive(Serialize, Deserialize)]
+pub struct List {
+    pub source: String,
+    pub ids: Vec<ProblemId>,
+}
 
-    let (text, name) = if source == "-" {
+pub fn resolve(client: &Client, named: &HashMap<String, String>, source: &str) -> Result<List> {
+    let text = if source == "-" {
         let mut stdin = std::io::stdin();
         if stdin.is_terminal() {
-            bail!("nothing piped into stdin, try `pbpaste | cf - <name>`");
+            bail!("nothing piped into stdin, try `pbpaste | cf -l -`");
         }
-        let Some(name) = name else {
-            bail!("a list from stdin needs a name, `cf - <name>`");
-        };
         let mut text = String::new();
         stdin.read_to_string(&mut text).context("reading stdin")?;
-        (text, name.to_string())
-    } else if source.starts_with("http://") || source.starts_with("https://") {
-        let name = match name {
-            Some(name) => name.to_string(),
-            None => url_name(source),
-        };
-        (client.get(source)?, name)
+        text
     } else {
-        let path = PathBuf::from(source);
-        if !path.is_file() {
-            bail!("{source} is not a file");
+        let target = named.get(source).map_or(source, String::as_str);
+        if is_url(target) {
+            client.get(target)?
+        } else if Path::new(target).is_file() {
+            read(target)?
+        } else {
+            bail!("{source} is not a file, a URL or a list in config.json");
         }
-        return Ok(path);
     };
-
-    if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
-        bail!("{name:?} is not a usable list name");
-    }
     let ids = statement::ids(&text);
     if ids.is_empty() {
         let label = if source == "-" { "stdin" } else { source };
         bail!("no problems in {label}, a list needs ids like 4A or problem links");
     }
-    let path = PathBuf::from("lists").join(format!("{name}.txt"));
-    let mut out = String::new();
-    for id in ids {
-        out.push_str(&id.to_string());
-        out.push('\n');
+    Ok(List {
+        source: source.to_string(),
+        ids,
+    })
+}
+
+// Files are read again since they may have been edited; URLs and stdin keep the ids they had.
+pub fn reload(named: &HashMap<String, String>, list: List) -> Result<List> {
+    let target = named
+        .get(&list.source)
+        .map_or(list.source.as_str(), String::as_str);
+    if is_url(target) || !Path::new(target).is_file() {
+        return Ok(list);
     }
-    std::fs::create_dir_all("lists")?;
-    std::fs::write(&path, out).with_context(|| format!("writing {}", path.display()))?;
-    Ok(path)
-}
-
-fn url_name(url: &str) -> String {
-    let path = url.split(['?', '#']).next().unwrap_or(url);
-    let segment = path.trim_end_matches('/').rsplit('/').next().unwrap_or("");
-    segment.to_string()
-}
-
-pub fn load(path: &Path) -> Result<Vec<ProblemId>> {
-    let text =
-        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let ids = statement::ids(&text);
+    let ids = statement::ids(&read(target)?);
     if ids.is_empty() {
-        bail!(
-            "no problems in {}, a list needs ids like 4A or problem links",
-            path.display()
-        );
+        bail!("no problems in {target}, a list needs ids like 4A or problem links");
     }
-    Ok(ids)
+    Ok(List { ids, ..list })
+}
+
+fn is_url(source: &str) -> bool {
+    source.starts_with("http://") || source.starts_with("https://")
+}
+
+fn read(path: &str) -> Result<String> {
+    std::fs::read_to_string(path).with_context(|| format!("reading {path}"))
 }

@@ -15,7 +15,7 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 
-use crate::codeforces::{Client, Handle, Problem, ProblemId, Refresh};
+use crate::codeforces::{Client, Handle, Last, Problem, ProblemId, Refresh};
 use crate::config::{Config, Dirs};
 use crate::watch::Watch;
 
@@ -27,12 +27,14 @@ use crate::watch::Watch;
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
-    #[arg(help = "List file, URL, or - for stdin; defaults to the last list")]
-    source: Option<String>,
-    #[arg(help = "Name to save a URL or stdin list under")]
-    name: Option<String>,
-    #[arg(long, help = "Only count accepted submissions from now on")]
-    fresh: bool,
+    #[arg(help = "Problem id or link to open; defaults to what was open last")]
+    problem: Option<String>,
+    #[arg(
+        short,
+        long,
+        help = "List to walk: a file, a URL, - for stdin, or a name from config.json"
+    )]
+    list: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -73,9 +75,8 @@ fn start(cli: Cli) -> Result<()> {
             &mut client,
             &dirs,
             config,
-            cli.source.as_deref(),
-            cli.name.as_deref(),
-            cli.fresh,
+            cli.problem.as_deref(),
+            cli.list.as_deref(),
         ),
     }
 }
@@ -118,29 +119,73 @@ fn practice(
     client: &mut Client,
     dirs: &Dirs,
     config: Config,
-    source: Option<&str>,
-    name: Option<&str>,
-    fresh: bool,
+    problem: Option<&str>,
+    list: Option<&str>,
 ) -> Result<()> {
     let mut state = client.state();
     let folder = std::env::current_dir()?;
-    let path = list::resolve(client, state.last.get(&folder), source, name)?;
-    let ids = list::load(&path)?;
-
-    let key = folder.join(&path);
-    if fresh {
-        state.fresh.insert(key.clone(), codeforces::now());
+    let last = state.last.remove(&folder);
+    let (list, mut start) = match (list, problem, last) {
+        (Some(source), _, _) => (Some(list::resolve(client, &config.lists, source)?), None),
+        (None, Some(_), _) => (None, None),
+        (None, None, Some(Last { list, problem })) => {
+            let list = match list {
+                Some(list) => Some(list::reload(&config.lists, list)?),
+                None => None,
+            };
+            (list, Some(problem))
+        }
+        (None, None, None) => bail!("nothing open yet, run `cf <problem>` or `cf -l <list>`"),
+    };
+    if let Some(text) = problem {
+        start = Some(problem_id(text)?);
     }
-    let since = state.fresh.get(&key).copied().unwrap_or(0);
-    state.last.insert(folder, path);
-    client.save_state(&state)?;
 
     let mut problems = client.problems(Refresh::Cached)?;
+    let wanted = match &list {
+        Some(list) => list.ids.clone(),
+        None => start.iter().cloned().collect(),
+    };
     // A problem the API doesn't list would otherwise trigger a 2 MB download on every start.
-    if unknown(&ids, &problems) && client.problems_age() > PROBLEMSET_MAX_AGE {
+    if unknown(&wanted, &problems) && client.problems_age() > PROBLEMSET_MAX_AGE {
         problems = client.problems(Refresh::Fetch)?;
     }
+    let ids = match &list {
+        Some(list) => list.ids.clone(),
+        None => problemset(&problems),
+    };
+    if let Some(id) = &start
+        && !ids.contains(id)
+    {
+        match (&list, problem) {
+            (Some(list), Some(_)) => bail!("{id} is not in {}", list.source),
+            (None, _) if id.is_gym() => {
+                bail!("{id} is a gym problem, cf only opens problemset problems")
+            }
+            (None, _) => bail!("{id} is not in the Codeforces problemset"),
+            // The list changed since cf last had it open.
+            (Some(_), None) => start = None,
+        }
+    }
+
     let submissions = client.submissions(&config.handle)?;
-    let mut watch = Watch::new(client, config, dirs, ids, since, problems, submissions)?;
-    watch.run()
+    let mut watch = Watch::new(client, config, dirs, ids, start, problems, submissions)?;
+    let problem = watch.run()?;
+    state.last.insert(folder, Last { list, problem });
+    client.save_state(&state)
+}
+
+fn problem_id(text: &str) -> Result<ProblemId> {
+    match statement::ids(text).as_slice() {
+        [id] => Ok(id.clone()),
+        _ => bail!("{text:?} is not a problem id like 4A or a problem link"),
+    }
+}
+
+// The whole problemset, oldest contest first, for walking it without a list.
+fn problemset(problems: &[Problem]) -> Vec<ProblemId> {
+    let mut ids: Vec<ProblemId> = problems.iter().filter_map(Problem::id).collect();
+    ids.sort();
+    ids.dedup();
+    ids
 }

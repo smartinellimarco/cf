@@ -14,6 +14,8 @@ pub struct Config {
     pub editor: String,
     pub lang: String,
     pub langs: HashMap<String, Lang>,
+    #[serde(default)]
+    pub lists: HashMap<String, String>,
 }
 
 #[derive(Deserialize, Clone)]
