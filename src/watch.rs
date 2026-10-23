@@ -25,8 +25,6 @@ const POLL_EVERY: Duration = Duration::from_secs(5);
 const POLL_FOR: Duration = Duration::from_secs(15 * 60);
 // Allows for clock skew between this machine and Codeforces.
 const SLACK_SECONDS: i64 = 30;
-// Notes and the verdict keep their own rows, so the report under them always starts at the same one.
-const MESSAGE_LINES: usize = 2;
 const NAME_WIDTH: usize = 40;
 const COLUMNS_PER_BAND: usize = 50;
 const BANDS_SHOWN: usize = 2;
@@ -1243,7 +1241,6 @@ impl<'a> Watch<'a> {
 
     fn messages(&self) -> Vec<String> {
         let mut messages = Vec::new();
-        // Most important first, since only MESSAGE_LINES of them show.
         let verdict = match &self.verdict {
             Verdict::Idle => String::new(),
             Verdict::Waiting => "Waiting for your submission…".to_string(),
@@ -1374,9 +1371,8 @@ impl<'a> Watch<'a> {
         lines.extend(center_block(&self.legend(), width));
         lines.push(String::new());
 
-        let mut messages: Vec<String> = self.messages().iter().map(|m| center(m, width)).collect();
-        messages.resize(MESSAGE_LINES, String::new());
-        lines.extend(messages);
+        // One row for all messages, so the report under it always starts at the same one.
+        lines.push(center(&self.messages().join("  ·  "), width));
         lines.push(String::new());
 
         let (head, details) = self.report();
