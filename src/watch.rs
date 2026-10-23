@@ -96,14 +96,16 @@ enum Motion {
     Find { forward: bool, standing: Standing },
 }
 
-// What ]f, ]s, ]t and ]e look for: the first three by the newest submission on Codeforces, the
-// last one by the result here.
+// What the ]x motions look for: the newest submission on Codeforces (failed, solved,
+// unsubmitted) or the open solution here (error, pass, untouched).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Standing {
     Failed,
     Solved,
-    Untouched,
+    Unsubmitted,
     LocalError,
+    LocalPass,
+    Untouched,
 }
 
 enum Verdict {
@@ -474,10 +476,14 @@ impl<'a> Watch<'a> {
             Command::PrevFailed => self.go(find(false, Standing::Failed)),
             Command::NextSolved => self.go(find(true, Standing::Solved)),
             Command::PrevSolved => self.go(find(false, Standing::Solved)),
-            Command::NextUntouched => self.go(find(true, Standing::Untouched)),
-            Command::PrevUntouched => self.go(find(false, Standing::Untouched)),
+            Command::NextUnsubmitted => self.go(find(true, Standing::Unsubmitted)),
+            Command::PrevUnsubmitted => self.go(find(false, Standing::Unsubmitted)),
             Command::NextLocalError => self.go(find(true, Standing::LocalError)),
             Command::PrevLocalError => self.go(find(false, Standing::LocalError)),
+            Command::NextLocalPass => self.go(find(true, Standing::LocalPass)),
+            Command::PrevLocalPass => self.go(find(false, Standing::LocalPass)),
+            Command::NextUntouched => self.go(find(true, Standing::Untouched)),
+            Command::PrevUntouched => self.go(find(false, Standing::Untouched)),
             Command::Copy => self.copy(),
             Command::Submit => self.submit(),
             Command::Web => self.browse(),
@@ -529,19 +535,15 @@ impl<'a> Watch<'a> {
         };
         let Some(to) = to else {
             let name = match motion {
-                Motion::Find {
-                    standing: Standing::Solved,
-                    ..
-                } => "solved",
-                Motion::Find {
-                    standing: Standing::Failed,
-                    ..
-                } => "failed",
-                Motion::Find {
-                    standing: Standing::LocalError,
-                    ..
-                } => "locally failing",
-                _ => "untouched",
+                Motion::Find { standing, .. } => match standing {
+                    Standing::Failed => "failed",
+                    Standing::Solved => "solved",
+                    Standing::Unsubmitted => "unsubmitted",
+                    Standing::LocalError => "locally failing",
+                    Standing::LocalPass => "locally passing",
+                    Standing::Untouched => "untouched",
+                },
+                Motion::Next | Motion::Prev | Motion::First | Motion::Last => return,
             };
             let side = match motion {
                 Motion::Find { forward: true, .. } => "after",
@@ -960,8 +962,10 @@ impl<'a> Watch<'a> {
                 matches!(latest, Some(Mark::Rejected | Mark::CompilationError))
             }
             Standing::Solved => latest == Some(Mark::Accepted),
-            Standing::Untouched => latest.is_none(),
+            Standing::Unsubmitted => latest.is_none(),
             Standing::LocalError => self.local(id) == Some(Local::Fail),
+            Standing::LocalPass => self.local(id) == Some(Local::Pass),
+            Standing::Untouched => self.source_of(id).is_none(),
         }
     }
 
@@ -1347,11 +1351,22 @@ impl<'a> Watch<'a> {
             (Command::Up, "up"),
             (Command::First, "first"),
             (Command::Last, "last"),
+        ]));
+        let remote = prompt(&entries(&[
             (Command::NextFailed, "failed"),
             (Command::NextSolved, "solved"),
-            (Command::NextUntouched, "untouched"),
-            (Command::NextLocalError, "local error"),
+            (Command::NextUnsubmitted, "unsubmitted"),
         ]));
+        let local = prompt(&entries(&[
+            (Command::NextLocalError, "error"),
+            (Command::NextLocalPass, "pass"),
+            (Command::NextUntouched, "untouched"),
+        ]));
+        let motions = format!(
+            "{motions}   {} {remote}   {} {local}",
+            "cf".dim(),
+            "local".dim()
+        );
         lines.push(center(&actions, width));
         lines.push(center(&motions, width));
         lines.push(String::new());
