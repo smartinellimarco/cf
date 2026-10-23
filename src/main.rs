@@ -1,5 +1,6 @@
 mod codeforces;
 mod config;
+mod fetch;
 mod list;
 mod local;
 mod run;

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use ureq::Agent;
 
 // The API allows one call every two seconds.
-const API_INTERVAL: Duration = Duration::from_secs(2);
+pub const API_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Deserialize, Clone, PartialEq, Eq)]
 #[serde(transparent)]

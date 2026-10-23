@@ -6,11 +6,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::codeforces::ProblemId;
 
+#[derive(Serialize, Deserialize)]
 pub struct Sample {
     pub input: String,
     pub answer: String,
 }
 
+#[derive(Serialize, Deserialize)]
 pub enum Kind {
     Standard,
     Interactive,
@@ -23,6 +25,7 @@ pub struct Files {
     pub output: Option<String>,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Statement {
     pub title: String,
     pub limits: String,
