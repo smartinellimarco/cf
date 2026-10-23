@@ -197,6 +197,9 @@ pub struct Watch<'a> {
     // When cf started, to step the spinner.
     started: Instant,
     clipboard: Option<arboard::Clipboard>,
+    // The last frame drawn and the terminal size it was drawn for.
+    frame: Vec<String>,
+    size: (u16, u16),
     root: PathBuf,
     templates: PathBuf,
     samples: PathBuf,
@@ -271,6 +274,8 @@ impl<'a> Watch<'a> {
             updates: None,
             started: Instant::now(),
             clipboard: None,
+            frame: Vec::new(),
+            size: (0, 0),
             templates: dirs.templates(),
             samples: dirs.samples(),
             builds: dirs.builds(&root),
@@ -1100,30 +1105,41 @@ impl<'a> Watch<'a> {
         changed
     }
 
-    fn render(&self) -> Result<()> {
-        let (columns, rows) = terminal::size()?;
+    // Writes only the lines that changed since the last frame, like a terminal ui's double buffer,
+    // inside one synchronized update; rewriting every line each tick makes busy screens flicker.
+    fn render(&mut self) -> Result<()> {
+        let size = terminal::size()?;
+        let (columns, rows) = size;
         let width = usize::from(columns);
-        let mut wrapped = Vec::new();
+        let mut lines = Vec::new();
         for line in self.problem(width).lines() {
-            wrapped.extend(wrap(line, width));
+            lines.extend(wrap(line, width));
         }
-        // Each frame overwrites the last one in a single synchronized update; clearing the whole
-        // screen first flashes every time the spinner turns.
+        lines.truncate(usize::from(rows));
         let mut stdout = std::io::stdout();
         queue!(stdout, terminal::BeginSynchronizedUpdate)?;
-        let shown = wrapped.len().min(usize::from(rows));
-        for (at, line) in wrapped.iter().take(shown).enumerate() {
-            queue!(stdout, cursor::MoveTo(0, at as u16))?;
-            stdout.write_all(line.as_bytes())?;
-            queue!(stdout, terminal::Clear(terminal::ClearType::UntilNewLine))?;
+        if size != self.size {
+            self.size = size;
+            self.frame.clear();
+            queue!(stdout, terminal::Clear(terminal::ClearType::All))?;
         }
-        queue!(
-            stdout,
-            cursor::MoveTo(0, shown as u16),
-            terminal::Clear(terminal::ClearType::FromCursorDown),
-            terminal::EndSynchronizedUpdate
-        )?;
+        for (at, line) in lines.iter().enumerate() {
+            if self.frame.get(at) != Some(line) {
+                queue!(stdout, cursor::MoveTo(0, at as u16))?;
+                stdout.write_all(line.as_bytes())?;
+                queue!(stdout, terminal::Clear(terminal::ClearType::UntilNewLine))?;
+            }
+        }
+        if self.frame.len() > lines.len() {
+            queue!(
+                stdout,
+                cursor::MoveTo(0, lines.len() as u16),
+                terminal::Clear(terminal::ClearType::FromCursorDown)
+            )?;
+        }
+        queue!(stdout, terminal::EndSynchronizedUpdate)?;
         stdout.flush()?;
+        self.frame = lines;
         Ok(())
     }
 
